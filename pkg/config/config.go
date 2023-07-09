@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/tls"
 	"fmt"
 	"os"
 	"reflect"
@@ -64,6 +65,8 @@ type Config struct {
 	Limit    LimitConfig   `yaml:"limit,omitempty"`
 
 	Development bool `yaml:"development,omitempty"`
+	//TLS config for port and bind addressess
+	TLS *tls.Config
 }
 
 type RTCConfig struct {

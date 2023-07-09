@@ -178,7 +178,7 @@ func (s *LivekitServer) Start() error {
 	listeners := make([]net.Listener, 0)
 	promListeners := make([]net.Listener, 0)
 	for _, addr := range addresses {
-		ln, err := net.Listen("tcp", net.JoinHostPort(addr, strconv.Itoa(int(s.config.Port))))
+		ln, err := s.getListenerFromConfig(addr)
 		if err != nil {
 			return err
 		}
