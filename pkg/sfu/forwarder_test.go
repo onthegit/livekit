@@ -1,3 +1,17 @@
+// Copyright 2023 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sfu
 
 import (
@@ -187,34 +201,13 @@ func TestForwarderAllocateOptimal(t *testing.T) {
 
 	f.PubMute(false)
 
-	// when parked layers valid, should stay there
-	f.vls.SetParked(buffer.VideoLayer{
-		Spatial:  0,
-		Temporal: 1,
-	})
-	expectedResult = VideoAllocation{
-		PauseReason:         VideoPauseReasonFeedDry,
-		BandwidthRequested:  0,
-		BandwidthDelta:      0,
-		Bitrates:            emptyBitrates,
-		TargetLayer:         f.vls.GetParked(),
-		RequestLayerSpatial: f.vls.GetParked().Spatial,
-		MaxLayer:            buffer.DefaultMaxLayer,
-		DistanceToDesired:   0,
-	}
-	result = f.AllocateOptimal(nil, emptyBitrates, true)
-	require.Equal(t, expectedResult, result)
-	require.Equal(t, expectedResult, f.lastAllocation)
-	require.Equal(t, f.vls.GetParked(), f.TargetLayer())
-	f.vls.SetParked(buffer.InvalidLayer)
-
 	// when max layers changes, target is opportunistic, but requested spatial layer should be at max
 	f.SetMaxTemporalLayerSeen(3)
 	f.vls.SetMax(buffer.VideoLayer{Spatial: 1, Temporal: 3})
 	expectedResult = VideoAllocation{
 		PauseReason:         VideoPauseReasonNone,
 		BandwidthRequested:  bitrates[1][3],
-		BandwidthDelta:      bitrates[1][3] - bitrates[0][1],
+		BandwidthDelta:      bitrates[1][3],
 		BandwidthNeeded:     bitrates[1][3],
 		Bitrates:            bitrates,
 		TargetLayer:         buffer.DefaultMaxLayer,
@@ -847,7 +840,7 @@ func TestForwarderProvisionalAllocateGetBestWeightedTransition(t *testing.T) {
 	expectedTransition := VideoTransition{
 		From:           f.TargetLayer(),
 		To:             buffer.VideoLayer{Spatial: 2, Temporal: 0},
-		BandwidthDelta: 2,
+		BandwidthDelta: -2,
 	}
 	transition := f.ProvisionalAllocateGetBestWeightedTransition()
 	require.Equal(t, expectedTransition, transition)

@@ -1,3 +1,17 @@
+// Copyright 2023 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package rtc
 
 import (
@@ -68,6 +82,7 @@ type ParticipantParams struct {
 	VideoConfig                  config.VideoConfig
 	ProtocolVersion              types.ProtocolVersion
 	Telemetry                    telemetry.TelemetryService
+	Trailer                      []byte
 	PLIThrottleConfig            config.PLIThrottleConfig
 	CongestionControlConfig      config.CongestionControlConfig
 	EnabledCodecs                []*livekit.Codec
@@ -93,6 +108,7 @@ type ParticipantParams struct {
 	SubscriberAllowPause         bool
 	SubscriptionLimitAudio       int32
 	SubscriptionLimitVideo       int32
+	PlayoutDelay                 *livekit.PlayoutDelay
 }
 
 type ParticipantImpl struct {
@@ -222,6 +238,12 @@ func NewParticipant(params ParticipantParams) (*ParticipantImpl, error) {
 	p.setupSubscriptionManager()
 
 	return p, nil
+}
+
+func (p *ParticipantImpl) GetTrailer() []byte {
+	trailer := make([]byte, len(p.params.Trailer))
+	copy(trailer, p.params.Trailer)
+	return trailer
 }
 
 func (p *ParticipantImpl) GetLogger() logger.Logger {
@@ -842,7 +864,9 @@ func (p *ParticipantImpl) ICERestart(iceConfig *livekit.ICEConfig) {
 		t.(types.LocalMediaTrack).Restart()
 	}
 
-	p.TransportManager.ICERestart(iceConfig)
+	if err := p.TransportManager.ICERestart(iceConfig); err != nil {
+		p.IssueFullReconnect(types.ParticipantCloseReasonNegotiateFailed)
+	}
 }
 
 func (p *ParticipantImpl) OnICEConfigChanged(f func(participant types.LocalParticipant, iceConfig *livekit.ICEConfig)) {
@@ -1081,6 +1105,7 @@ func (p *ParticipantImpl) setupTransportManager() error {
 		TCPFallbackRTTThreshold:  p.params.TCPFallbackRTTThreshold,
 		AllowUDPUnstableFallback: p.params.AllowUDPUnstableFallback,
 		TURNSEnabled:             p.params.TURNSEnabled,
+		AllowPlayoutDelay:        p.params.PlayoutDelay.GetEnabled() && p.SupportSyncStreamID(),
 		Logger:                   p.params.Logger,
 	})
 	if err != nil {
@@ -1561,6 +1586,10 @@ func (p *ParticipantImpl) addPendingTrackLocked(req *livekit.AddTrackRequest) *l
 		DisableRed: req.DisableRed,
 		Stereo:     req.Stereo,
 		Encryption: req.Encryption,
+		Stream:     req.Stream,
+	}
+	if ti.Stream == "" {
+		ti.Stream = StreamFromTrackSource(ti.Source)
 	}
 	p.setStableTrackID(req.Cid, ti)
 	for _, codec := range req.SimulcastCodecs {
@@ -1894,7 +1923,6 @@ func (p *ParticipantImpl) getPendingTrack(clientId string, kind livekit.TrackTyp
 	if pendingInfo == nil {
 	track_loop:
 		for cid, pti := range p.pendingTracks {
-
 			ti := pti.trackInfos[0]
 			for _, c := range ti.Codecs {
 				if c.Cid == clientId {
@@ -2190,6 +2218,14 @@ func (p *ParticipantImpl) UpdateMediaLoss(nodeID livekit.NodeID, trackID livekit
 
 	track.(types.LocalMediaTrack).NotifySubscriberNodeMediaLoss(nodeID, uint8(fractionalLoss))
 	return nil
+}
+
+func (p *ParticipantImpl) GetPlayoutDelayConfig() *livekit.PlayoutDelay {
+	return p.params.PlayoutDelay
+}
+
+func (p *ParticipantImpl) SupportSyncStreamID() bool {
+	return p.ProtocolVersion().SupportSyncStreamID() && !p.params.ClientInfo.isFirefox()
 }
 
 func codecsFromMediaDescription(m *sdp.MediaDescription) (out []sdp.Codec, err error) {

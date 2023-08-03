@@ -1,3 +1,17 @@
+// Copyright 2023 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package buffer
 
 import (
@@ -793,8 +807,10 @@ func (r *RTPStats) SetRtcpSenderReportData(srData *RTCPSenderReportData) {
 			r.logger.Infow(
 				"received sender report, out-of-order, resetting",
 				"prevTSExt", r.srNewest.RTPTimestampExt,
+				"prevRTP", r.srNewest.RTPTimestamp,
 				"prevNTP", r.srNewest.NTPTimestamp.Time().String(),
 				"currTSExt", srDataCopy.RTPTimestampExt,
+				"currRTP", srDataCopy.RTPTimestamp,
 				"currNTP", srDataCopy.NTPTimestamp.Time().String(),
 			)
 			r.srFirst = &srDataCopy
@@ -900,7 +916,9 @@ func (r *RTPStats) GetRtcpSenderReport(ssrc uint32, calculatedClockRate uint32) 
 	}
 
 	if r.srNewest != nil && nowRTPExt < r.srNewest.RTPTimestampExt {
-		// If report being generated is behind, use the time different and clock rate of codec to produce next report.
+		// If report being generated is behind, use the time difference and
+		// clock rate of codec to produce next report.
+		//
 		// Current report could be behind due to the following
 		//  - Publisher pacing
 		//  - Due to above, report from publisher side is ahead of packet timestamps.
@@ -912,8 +930,10 @@ func (r *RTPStats) GetRtcpSenderReport(ssrc uint32, calculatedClockRate uint32) 
 		r.logger.Infow(
 			"sending sender report, out-of-order, repairing",
 			"prevTSExt", r.srNewest.RTPTimestampExt,
+			"prevRTP", r.srNewest.RTPTimestamp,
 			"prevNTP", r.srNewest.NTPTimestamp.Time().String(),
 			"currTSExt", nowRTPExt,
+			"currRTP", nowRTP,
 			"currNTP", nowNTP.Time().String(),
 		)
 		ntpDiffSinceLast := nowNTP.Time().Sub(r.srNewest.NTPTimestamp.Time())
@@ -952,25 +972,6 @@ func (r *RTPStats) GetRtcpSenderReport(ssrc uint32, calculatedClockRate uint32) 
 		packetDriftResult, reportDriftResult := r.getDrift()
 		r.logger.Infow(
 			"sending sender report, time warp",
-			"ntp", nowNTP.Time().String(),
-			"rtp", nowRTP,
-			"departure", now.String(),
-			"ntpDiffSinceLast", ntpDiffSinceLast.Seconds(),
-			"rtpDiffSinceLast", int32(rtpDiffSinceLast),
-			"departureDiffSinceLast", departureDiffSinceLast.Seconds(),
-			"expectedTimeDiffSinceLast", expectedTimeDiffSinceLast,
-			"packetDrift", packetDriftResult.String(),
-			"reportDrift", reportDriftResult.String(),
-			"highestTS", r.highestTS,
-			"highestTime", r.highestTime.String(),
-			"calculatedClockRate", calculatedClockRate,
-			"nowRTPExt", nowRTPExt,
-			"nowRTPExtUsingRate", nowRTPExtUsingRate,
-		)
-	} else {
-		packetDriftResult, reportDriftResult := r.getDrift()
-		r.logger.Debugw(
-			"sending sender report",
 			"ntp", nowNTP.Time().String(),
 			"rtp", nowRTP,
 			"departure", now.String(),

@@ -1,3 +1,17 @@
+// Copyright 2023 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package rtc
 
 import (
@@ -16,6 +30,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/utils"
+	"github.com/livekit/psrpc"
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
@@ -77,6 +92,8 @@ type Room struct {
 	leftAt atomic.Int64
 	closed chan struct{}
 
+	trailer []byte
+
 	onParticipantChanged func(p types.LocalParticipant)
 	onRoomUpdated        func()
 	onClose              func()
@@ -111,6 +128,7 @@ func NewRoom(
 		bufferFactory:             buffer.NewFactoryOfBufferFactory(config.Receiver.PacketBufferSize),
 		batchedUpdates:            make(map[livekit.ParticipantIdentity]*livekit.ParticipantInfo),
 		closed:                    make(chan struct{}),
+		trailer:                   []byte(utils.RandomSecret()),
 	}
 	r.protoProxy = utils.NewProtoProxy[*livekit.Room](roomUpdateInterval, r.updateProto)
 	if r.protoRoom.EmptyTimeout == 0 {
@@ -137,6 +155,15 @@ func (r *Room) Name() livekit.RoomName {
 
 func (r *Room) ID() livekit.RoomID {
 	return livekit.RoomID(r.protoRoom.Sid)
+}
+
+func (r *Room) Trailer() []byte {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	trailer := make([]byte, len(r.trailer))
+	copy(trailer, r.trailer)
+	return trailer
 }
 
 func (r *Room) GetParticipant(identity livekit.ParticipantIdentity) types.LocalParticipant {
@@ -821,6 +848,7 @@ func (r *Room) createJoinResponseLocked(participant types.LocalParticipant, iceS
 		ServerInfo:    r.serverInfo,
 		ServerVersion: r.serverInfo.Version,
 		ServerRegion:  r.serverInfo.Region,
+		SifTrailer:    r.trailer,
 	}
 }
 
@@ -1283,7 +1311,7 @@ func BroadcastDataPacketForRoom(r types.Room, source types.LocalParticipant, dp 
 
 	utils.ParallelExec(destParticipants, dataForwardLoadBalanceThreshold, 1, func(op types.LocalParticipant) {
 		err := op.SendDataPacket(dp, dpData)
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, psrpc.Canceled) {
 			op.GetLogger().Infow("send data packet error", "error", err)
 		}
 	})

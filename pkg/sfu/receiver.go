@@ -1,3 +1,17 @@
+// Copyright 2023 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package sfu
 
 import (
@@ -112,8 +126,8 @@ type WebRTCReceiver struct {
 	onStatsUpdate    func(w *WebRTCReceiver, stat *livekit.AnalyticsStat)
 	onMaxLayerChange func(maxLayer int32)
 
-	primaryReceiver atomic.Value // *RedPrimaryReceiver
-	redReceiver     atomic.Value // *RedReceiver
+	primaryReceiver atomic.Pointer[RedPrimaryReceiver]
+	redReceiver     atomic.Pointer[RedReceiver]
 	redPktWriter    func(pkt *buffer.ExtPacket, spatialLayer int32)
 }
 
@@ -218,7 +232,7 @@ func NewWebRTCReceiver(
 	w.connectionStats.Start(w.trackInfo)
 
 	for _, ext := range receiver.GetParameters().HeaderExtensions {
-		if ext.URI == dd.ExtensionUrl {
+		if ext.URI == dd.ExtensionURI {
 			w.streamTrackerManager.AddDependencyDescriptorTrackers()
 			break
 		}
@@ -408,34 +422,34 @@ func (w *WebRTCReceiver) SetMaxExpectedSpatialLayer(layer int32) {
 
 // StreamTrackerManagerListener.OnAvailableLayersChanged
 func (w *WebRTCReceiver) OnAvailableLayersChanged() {
-	for _, dt := range w.downTrackSpreader.GetDownTracks() {
+	w.downTrackSpreader.Broadcast(func(dt TrackSender) {
 		dt.UpTrackLayersChange()
-	}
+	})
 
 	w.connectionStats.AddLayerTransition(w.streamTrackerManager.DistanceToDesired())
 }
 
 // StreamTrackerManagerListener.OnBitrateAvailabilityChanged
 func (w *WebRTCReceiver) OnBitrateAvailabilityChanged() {
-	for _, dt := range w.downTrackSpreader.GetDownTracks() {
+	w.downTrackSpreader.Broadcast(func(dt TrackSender) {
 		dt.UpTrackBitrateAvailabilityChange()
-	}
+	})
 }
 
 // StreamTrackerManagerListener.OnMaxPublishedLayerChanged
 func (w *WebRTCReceiver) OnMaxPublishedLayerChanged(maxPublishedLayer int32) {
-	for _, dt := range w.downTrackSpreader.GetDownTracks() {
+	w.downTrackSpreader.Broadcast(func(dt TrackSender) {
 		dt.UpTrackMaxPublishedLayerChange(maxPublishedLayer)
-	}
+	})
 
 	w.connectionStats.AddLayerTransition(w.streamTrackerManager.DistanceToDesired())
 }
 
 // StreamTrackerManagerListener.OnMaxTemporalLayerSeenChanged
 func (w *WebRTCReceiver) OnMaxTemporalLayerSeenChanged(maxTemporalLayerSeen int32) {
-	for _, dt := range w.downTrackSpreader.GetDownTracks() {
+	w.downTrackSpreader.Broadcast(func(dt TrackSender) {
 		dt.UpTrackMaxTemporalLayerSeenChange(maxTemporalLayerSeen)
-	}
+	})
 
 	w.connectionStats.AddLayerTransition(w.streamTrackerManager.DistanceToDesired())
 }
@@ -610,10 +624,10 @@ func (w *WebRTCReceiver) forwardRTP(layer int32) {
 			w.closed.Store(true)
 			w.closeTracks()
 			if pr := w.primaryReceiver.Load(); pr != nil {
-				pr.(*RedPrimaryReceiver).Close()
+				pr.Close()
 			}
 			if pr := w.redReceiver.Load(); pr != nil {
-				pr.(*RedReceiver).Close()
+				pr.Close()
 			}
 		})
 
@@ -717,7 +731,7 @@ func (w *WebRTCReceiver) GetPrimaryReceiverForRed() TrackReceiver {
 			w.bufferMu.Unlock()
 		}
 	}
-	return w.primaryReceiver.Load().(*RedPrimaryReceiver)
+	return w.primaryReceiver.Load()
 }
 
 func (w *WebRTCReceiver) GetRedReceiver() TrackReceiver {
@@ -736,7 +750,7 @@ func (w *WebRTCReceiver) GetRedReceiver() TrackReceiver {
 			w.bufferMu.Unlock()
 		}
 	}
-	return w.redReceiver.Load().(*RedReceiver)
+	return w.redReceiver.Load()
 }
 
 func (w *WebRTCReceiver) GetTemporalLayerFpsForSpatial(layer int32) []float32 {

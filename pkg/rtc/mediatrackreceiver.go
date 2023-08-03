@@ -1,3 +1,17 @@
+// Copyright 2023 LiveKit, Inc.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package rtc
 
 import (
@@ -212,7 +226,7 @@ func (t *MediaTrackReceiver) SetPotentialCodecs(codecs []webrtc.RTPCodecParamete
 	// that is munged in svc codec.
 	headersWithoutDD := make([]webrtc.RTPHeaderExtensionParameter, 0, len(headers))
 	for _, h := range headers {
-		if h.URI != dependencydescriptor.ExtensionUrl {
+		if h.URI != dependencydescriptor.ExtensionURI {
 			headersWithoutDD = append(headersWithoutDD, h)
 		}
 	}
@@ -385,6 +399,13 @@ func (t *MediaTrackReceiver) Source() livekit.TrackSource {
 	defer t.lock.RUnlock()
 
 	return t.trackInfo.Source
+}
+
+func (t *MediaTrackReceiver) Stream() string {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	return t.trackInfo.Stream
 }
 
 func (t *MediaTrackReceiver) PublisherID() livekit.ParticipantID {
@@ -798,6 +819,13 @@ func (t *MediaTrackReceiver) GetTemporalLayerForSpatialFps(spatial int32, fps ui
 		}
 	}
 	return buffer.DefaultMaxLayerTemporal
+}
+
+func (t *MediaTrackReceiver) IsEncrypted() bool {
+	t.lock.RLock()
+	defer t.lock.RUnlock()
+
+	return t.trackInfo.Encryption != livekit.Encryption_NONE
 }
 
 // ---------------------------
