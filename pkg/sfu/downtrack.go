@@ -408,9 +408,11 @@ func (d *DownTrack) Bind(t webrtc.TrackLocalContext) (webrtc.RTPCodecParameters,
 	// Bind is called under RTPSender.mu lock, call the RTPSender.GetParameters in goroutine to avoid deadlock
 	go func() {
 		if tr := d.transceiver.Load(); tr != nil {
-			extensions := tr.Sender().GetParameters().HeaderExtensions
-			d.params.Logger.Debugw("negotiated downtrack extensions", "extensions", extensions)
-			d.SetRTPHeaderExtensions(extensions)
+			if sender := tr.Sender(); sender != nil {
+				extensions := sender.GetParameters().HeaderExtensions
+				d.params.Logger.Debugw("negotiated downtrack extensions", "extensions", extensions)
+				d.SetRTPHeaderExtensions(extensions)
+			}
 		}
 	}()
 
@@ -1802,7 +1804,10 @@ func (d *DownTrack) sendSilentFrameOnMuteForOpus() {
 	}
 }
 
-func (d *DownTrack) HandleRTCPSenderReportData(_payloadType webrtc.PayloadType, _layer int32, _srData *buffer.RTCPSenderReportData) error {
+func (d *DownTrack) HandleRTCPSenderReportData(_payloadType webrtc.PayloadType, layer int32, srData *buffer.RTCPSenderReportData) error {
+	if layer == d.forwarder.GetReferenceLayerSpatial() {
+		d.rtpStats.MaybeAdjustFirstPacketTime(srData)
+	}
 	return nil
 }
 

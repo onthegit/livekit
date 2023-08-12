@@ -231,10 +231,12 @@ func NewWebRTCReceiver(
 	})
 	w.connectionStats.Start(w.trackInfo)
 
-	for _, ext := range receiver.GetParameters().HeaderExtensions {
-		if ext.URI == dd.ExtensionURI {
-			w.streamTrackerManager.AddDependencyDescriptorTrackers()
-			break
+	if w.isSVC {
+		for _, ext := range receiver.GetParameters().HeaderExtensions {
+			if ext.URI == dd.ExtensionURI {
+				w.streamTrackerManager.AddDependencyDescriptorTrackers()
+				break
+			}
 		}
 	}
 
@@ -331,12 +333,12 @@ func (w *WebRTCReceiver) AddUpTrack(track *webrtc.TrackRemote, buff *buffer.Buff
 		SmoothIntervals: w.audioConfig.SmoothIntervals,
 	})
 	buff.OnRtcpFeedback(w.sendRTCP)
-	buff.OnRtcpSenderReport(func(srData *buffer.RTCPSenderReportData) {
+	buff.OnRtcpSenderReport(func() {
 		srFirst, srNewest := buff.GetSenderReportData()
 		w.streamTrackerManager.SetRTCPSenderReportData(layer, srFirst, srNewest)
 
 		w.downTrackSpreader.Broadcast(func(dt TrackSender) {
-			_ = dt.HandleRTCPSenderReportData(w.codec.PayloadType, layer, srData)
+			_ = dt.HandleRTCPSenderReportData(w.codec.PayloadType, layer, srNewest)
 		})
 	})
 

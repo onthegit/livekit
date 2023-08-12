@@ -15,6 +15,7 @@
 package sfu
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -40,7 +41,7 @@ const (
 	FlagFilterRTX         = true
 	TransitionCostSpatial = 10
 
-	ResumeBehindThresholdSeconds      = float64(0.1)   // 100ms
+	ResumeBehindThresholdSeconds      = float64(0.2)   // 200ms
 	LayerSwitchBehindThresholdSeconds = float64(0.05)  // 50ms
 	SwitchAheadThresholdSeconds       = float64(0.025) // 25ms
 )
@@ -187,8 +188,9 @@ type Forwarder struct {
 	getReferenceLayerRTPTimestamp func(ts uint32, layer int32, referenceLayer int32) (uint32, error)
 	getExpectedRTPTimestamp       func(at time.Time) (uint64, error)
 
-	muted    bool
-	pubMuted bool
+	muted                 bool
+	pubMuted              bool
+	resumeBehindThreshold float64
 
 	started               bool
 	preStartTime          time.Time
@@ -1218,7 +1220,10 @@ func (f *Forwarder) GetNextHigherTransition(brs Bitrates, allowOvershoot bool) (
 		for s := minSpatial; s <= maxSpatial; s++ {
 			for t := minTemporal; t <= maxTemporal; t++ {
 				bandwidthRequested := brs[s][t]
-				if bandwidthRequested == 0 {
+				// traverse till finding a layer requiring more bits.
+				// NOTE: it possible that higher temporal layer of lower spatial layer
+				//       could use more bits than lower temporal layer of higher spatial layer.
+				if bandwidthRequested == 0 || bandwidthRequested < alreadyAllocated {
 					continue
 				}
 
@@ -1359,6 +1364,9 @@ func (f *Forwarder) Resync() {
 func (f *Forwarder) resyncLocked() {
 	f.vls.SetCurrent(buffer.InvalidLayer)
 	f.lastSSRC = 0
+	if f.pubMuted {
+		f.resumeBehindThreshold = ResumeBehindThresholdSeconds
+	}
 }
 
 func (f *Forwarder) CheckSync() (locked bool, layer int32) {
@@ -1424,7 +1432,7 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 		f.referenceLayerSpatial = layer
 		f.rtpMunger.SetLastSnTs(extPkt)
 		f.codecMunger.SetLast(extPkt)
-		f.logger.Debugw(
+		f.logger.Infow(
 			"starting forwarding",
 			"sequenceNumber", extPkt.Packet.SequenceNumber,
 			"timestamp", extPkt.Packet.Timestamp,
@@ -1432,6 +1440,17 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 			"referenceLayerSpatial", f.referenceLayerSpatial,
 		)
 		return nil
+	}
+
+	logTransition := func(message string, expectedTS, refTS, lastTS uint32, diffSeconds float64) {
+		f.logger.Infow(
+			message,
+			"layer", layer,
+			"expectedTS", expectedTS,
+			"refTS", refTS,
+			"lastTS", lastTS,
+			"diffSeconds", math.Abs(diffSeconds),
+		)
 	}
 
 	if f.referenceLayerSpatial == buffer.InvalidLayerSpatial {
@@ -1449,20 +1468,23 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 	//   3. expectedTS -> expected timestamp of this packet calculated based on elapsed time since first packet
 	// Ideally, refTS and expectedTS should be very close and lastTS should be before both of those.
 	// But, cases like muting/unmuting, clock vagaries, pacing, etc. make them not satisfy those conditions always.
-	lastTS := f.rtpMunger.GetLast().LastTS
+	rtpMungerState := f.rtpMunger.GetLast()
+	lastTS := rtpMungerState.LastTS
 	refTS := lastTS
 	expectedTS := lastTS
 	switchingAt := time.Now()
 	if f.getReferenceLayerRTPTimestamp != nil {
 		ts, err := f.getReferenceLayerRTPTimestamp(extPkt.Packet.Timestamp, layer, f.referenceLayerSpatial)
-		if err == nil {
-			refTS = ts
+		if err != nil {
+			// error out if refTS is not available. It can happen when there is no sender report
+			// for the layer being switched to. Can especially happen at the start of the track when layer switches are
+			// potentially happening very quickly. Erroring out and waiting for a layer for which a sender report has been
+			// received will calculate a better offset, but may result in initial adaptation to take a bit longer depending
+			// on how often publisher/remote side sends RTCP sender report.
+			return err
 		}
-		// AVSYNC-TODO: can error out here if refTS is not available. It can happen when there is no sender report
-		// for the layer being switched to. Can especially happen at the start of the track when layer switches are
-		// potentially happening very quickly. Erroring out and waiting for a layer for which a sender report has been
-		// received will calculate a better offset, but may result in initial adaptation to take a bit longer depending
-		// on how often publisher/remote side sends RTCP sender report.
+
+		refTS = ts
 	}
 
 	if f.getExpectedRTPTimestamp != nil {
@@ -1508,46 +1530,45 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 		// between expectedTS and refTS is thresholded. Difference below the threshold is treated as Case 2
 		// and above as Case 1.
 		//
-		// In the event of refTS > expectedTS, another threshold is used to pick the next timestamp.
+		// In the event of refTS > expectedTS, use refTS.
 		// Ideally, refTS should not be ahead of expectedTS, but expectedTS uses the first packet's
 		// wall clock time. So, if the first packet experienced abmormal latency, it is possible
 		// for refTS > expectedTS
-		diffSeconds := float64(expectedTS-refTS) / float64(f.codec.ClockRate)
+		diffSeconds := float64(int32(expectedTS-refTS)) / float64(f.codec.ClockRate)
 		if diffSeconds >= 0.0 {
-			if diffSeconds > ResumeBehindThresholdSeconds {
-				f.logger.Infow("resume, reference too far behind", "expectedTS", expectedTS, "refTS", refTS, "diffSeconds", diffSeconds)
+			if f.resumeBehindThreshold > 0 && diffSeconds > f.resumeBehindThreshold {
+				logTransition("resume, reference too far behind", expectedTS, refTS, lastTS, diffSeconds)
 				nextTS = expectedTS
 			} else {
 				nextTS = refTS
 			}
 		} else {
 			if math.Abs(diffSeconds) > SwitchAheadThresholdSeconds {
-				f.logger.Infow("resume, reference too far ahead", "expectedTS", expectedTS, "refTS", refTS, "diffSeconds", math.Abs(diffSeconds))
-				nextTS = expectedTS
-			} else {
-				nextTS = refTS
+				logTransition("resume, reference too far ahead", expectedTS, refTS, lastTS, diffSeconds)
 			}
+			nextTS = refTS
 		}
+		f.resumeBehindThreshold = 0.0
 	} else {
 		// switching between layers, check if refTS is too far behind the last sent
-		diffSeconds := float64(refTS-lastTS) / float64(f.codec.ClockRate)
+		diffSeconds := float64(int32(refTS-lastTS)) / float64(f.codec.ClockRate)
 		if diffSeconds < 0.0 {
 			if math.Abs(diffSeconds) > LayerSwitchBehindThresholdSeconds {
-				// AVSYNC-TODO: This could be due to pacer trickling out this layer. Should potentially return error here and wait for a more opportune time
-				// or some forcing function (like "have waited for too long for layer switch, nothing available, switch to whatever is available" kind of condition)
-				// to do the switch. Just logging it for now.
-				f.logger.Infow("layer switch, reference too far behind", "expectedTS", expectedTS, "refTS", refTS, "lastTS", lastTS, "diffSeconds", math.Abs(diffSeconds))
+				// this could be due to pacer trickling out this layer. Error out and wait for a more opportune time.
+				// AVSYNC-TODO: Consider some forcing function to do the switch
+				// (like "have waited for too long for layer switch, nothing available, switch to whatever is available" kind of condition).
+				logTransition("layer switch, reference too far behind", expectedTS, refTS, lastTS, diffSeconds)
+				return errors.New("switch point too far behind")
 			}
 			// use a nominal increase to ensure that timestamp is always moving forward
+			logTransition("layer switch, reference is slightly behind", expectedTS, refTS, lastTS, diffSeconds)
 			nextTS = lastTS + 1
 		} else {
-			diffSeconds = float64(expectedTS-refTS) / float64(f.codec.ClockRate)
+			diffSeconds = float64(int32(expectedTS-refTS)) / float64(f.codec.ClockRate)
 			if diffSeconds < 0.0 && math.Abs(diffSeconds) > SwitchAheadThresholdSeconds {
-				f.logger.Infow("layer switch, reference too far ahead", "expectedTS", expectedTS, "refTS", refTS, "diffSeconds", math.Abs(diffSeconds))
-				nextTS = expectedTS
-			} else {
-				nextTS = refTS
+				logTransition("layer switch, reference too far ahead", expectedTS, refTS, lastTS, diffSeconds)
 			}
+			nextTS = refTS
 		}
 	}
 
@@ -1556,7 +1577,7 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 		// nominal increase
 		nextTS = lastTS + 1
 	}
-	f.logger.Debugw(
+	f.logger.Infow(
 		"next timestamp on switch",
 		"switchingAt", switchingAt.String(),
 		"layer", layer,
@@ -1566,7 +1587,8 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 		"referenceLayerSpatial", f.referenceLayerSpatial,
 		"expectedTS", expectedTS,
 		"nextTS", nextTS,
-		"jump", nextTS-lastTS,
+		"tsJump", nextTS-lastTS,
+		"nextSN", rtpMungerState.LastSN+1,
 	)
 
 	f.rtpMunger.UpdateSnTsOffsets(extPkt, 1, nextTS-lastTS)
@@ -1582,7 +1604,7 @@ func (f *Forwarder) getTranslationParamsCommon(extPkt *buffer.ExtPacket, layer i
 	if f.lastSSRC != extPkt.Packet.SSRC {
 		if err := f.processSourceSwitch(extPkt, layer); err != nil {
 			tp.shouldDrop = true
-			return tp, err
+			return tp, nil
 		}
 		f.logger.Debugw("switching feed", "from", f.lastSSRC, "to", extPkt.Packet.SSRC)
 		f.lastSSRC = extPkt.Packet.SSRC
