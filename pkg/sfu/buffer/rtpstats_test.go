@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/livekit/protocol/logger"
 	"github.com/pion/rtp"
 	"github.com/stretchr/testify/require"
 )
@@ -38,6 +39,7 @@ func TestRTPStats(t *testing.T) {
 	clockRate := uint32(90000)
 	r := NewRTPStats(RTPStatsParams{
 		ClockRate: clockRate,
+		Logger:    logger.GetLogger(),
 	})
 
 	totalDuration := 5 * time.Second
@@ -79,6 +81,7 @@ func TestRTPStats_Update(t *testing.T) {
 	clockRate := uint32(90000)
 	r := NewRTPStats(RTPStatsParams{
 		ClockRate: clockRate,
+		Logger:    logger.GetLogger(),
 	})
 
 	sequenceNumber := uint16(rand.Float64() * float64(1<<16))
@@ -87,8 +90,10 @@ func TestRTPStats_Update(t *testing.T) {
 	flowState := r.Update(&packet.Header, len(packet.Payload), 0, time.Now())
 	require.False(t, flowState.HasLoss)
 	require.True(t, r.initialized)
-	require.Equal(t, sequenceNumber, r.highestSN)
-	require.Equal(t, timestamp, r.highestTS)
+	require.Equal(t, sequenceNumber, r.sequenceNumber.GetHighest())
+	require.Equal(t, sequenceNumber, uint16(r.sequenceNumber.GetExtendedHighest()))
+	require.Equal(t, timestamp, r.timestamp.GetHighest())
+	require.Equal(t, timestamp, uint32(r.timestamp.GetExtendedHighest()))
 
 	// in-order, no loss
 	sequenceNumber++
@@ -96,26 +101,32 @@ func TestRTPStats_Update(t *testing.T) {
 	packet = getPacket(sequenceNumber, timestamp, 1000)
 	flowState = r.Update(&packet.Header, len(packet.Payload), 0, time.Now())
 	require.False(t, flowState.HasLoss)
-	require.Equal(t, sequenceNumber, r.highestSN)
-	require.Equal(t, timestamp, r.highestTS)
+	require.Equal(t, sequenceNumber, r.sequenceNumber.GetHighest())
+	require.Equal(t, sequenceNumber, uint16(r.sequenceNumber.GetExtendedHighest()))
+	require.Equal(t, timestamp, r.timestamp.GetHighest())
+	require.Equal(t, timestamp, uint32(r.timestamp.GetExtendedHighest()))
 
 	// out-of-order
 	packet = getPacket(sequenceNumber-10, timestamp-30000, 1000)
 	flowState = r.Update(&packet.Header, len(packet.Payload), 0, time.Now())
 	require.False(t, flowState.HasLoss)
-	require.Equal(t, sequenceNumber, r.highestSN)
-	require.Equal(t, timestamp, r.highestTS)
-	require.Equal(t, uint32(1), r.packetsOutOfOrder)
-	require.Equal(t, uint32(0), r.packetsDuplicate)
+	require.Equal(t, sequenceNumber, r.sequenceNumber.GetHighest())
+	require.Equal(t, sequenceNumber, uint16(r.sequenceNumber.GetExtendedHighest()))
+	require.Equal(t, timestamp, r.timestamp.GetHighest())
+	require.Equal(t, timestamp, uint32(r.timestamp.GetExtendedHighest()))
+	require.Equal(t, uint64(1), r.packetsOutOfOrder)
+	require.Equal(t, uint64(0), r.packetsDuplicate)
 
 	// duplicate
 	packet = getPacket(sequenceNumber-10, timestamp-30000, 1000)
 	flowState = r.Update(&packet.Header, len(packet.Payload), 0, time.Now())
 	require.False(t, flowState.HasLoss)
-	require.Equal(t, sequenceNumber, r.highestSN)
-	require.Equal(t, timestamp, r.highestTS)
-	require.Equal(t, uint32(2), r.packetsOutOfOrder)
-	require.Equal(t, uint32(1), r.packetsDuplicate)
+	require.Equal(t, sequenceNumber, r.sequenceNumber.GetHighest())
+	require.Equal(t, sequenceNumber, uint16(r.sequenceNumber.GetExtendedHighest()))
+	require.Equal(t, timestamp, r.timestamp.GetHighest())
+	require.Equal(t, timestamp, uint32(r.timestamp.GetExtendedHighest()))
+	require.Equal(t, uint64(2), r.packetsOutOfOrder)
+	require.Equal(t, uint64(1), r.packetsDuplicate)
 
 	// loss
 	sequenceNumber += 10
@@ -123,21 +134,23 @@ func TestRTPStats_Update(t *testing.T) {
 	packet = getPacket(sequenceNumber, timestamp, 1000)
 	flowState = r.Update(&packet.Header, len(packet.Payload), 0, time.Now())
 	require.True(t, flowState.HasLoss)
-	require.Equal(t, sequenceNumber-9, flowState.LossStartInclusive)
-	require.Equal(t, sequenceNumber, flowState.LossEndExclusive)
-	require.Equal(t, uint32(17), r.packetsLost)
+	require.Equal(t, uint64(sequenceNumber-9), flowState.LossStartInclusive)
+	require.Equal(t, uint64(sequenceNumber), flowState.LossEndExclusive)
+	require.Equal(t, uint64(17), r.packetsLost)
 
 	// out-of-order should decrement number of lost packets
 	packet = getPacket(sequenceNumber-15, timestamp-45000, 1000)
 	flowState = r.Update(&packet.Header, len(packet.Payload), 0, time.Now())
 	require.False(t, flowState.HasLoss)
-	require.Equal(t, sequenceNumber, r.highestSN)
-	require.Equal(t, timestamp, r.highestTS)
-	require.Equal(t, uint32(3), r.packetsOutOfOrder)
-	require.Equal(t, uint32(1), r.packetsDuplicate)
-	require.Equal(t, uint32(16), r.packetsLost)
-	intervalStats := r.getIntervalStats(uint16(r.extStartSN), uint16(r.getExtHighestSN()+1))
-	require.Equal(t, uint32(16), intervalStats.packetsLost)
+	require.Equal(t, sequenceNumber, r.sequenceNumber.GetHighest())
+	require.Equal(t, sequenceNumber, uint16(r.sequenceNumber.GetExtendedHighest()))
+	require.Equal(t, timestamp, r.timestamp.GetHighest())
+	require.Equal(t, timestamp, uint32(r.timestamp.GetExtendedHighest()))
+	require.Equal(t, uint64(3), r.packetsOutOfOrder)
+	require.Equal(t, uint64(1), r.packetsDuplicate)
+	require.Equal(t, uint64(16), r.packetsLost)
+	intervalStats := r.getIntervalStats(r.sequenceNumber.GetExtendedStart(), r.sequenceNumber.GetExtendedHighest()+1)
+	require.Equal(t, uint64(16), intervalStats.packetsLost)
 
 	r.Stop()
 }

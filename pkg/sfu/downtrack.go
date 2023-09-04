@@ -84,6 +84,7 @@ var (
 	ErrOutOfOrderSequenceNumberCacheMiss = errors.New("out-of-order sequence number not found in cache")
 	ErrPaddingOnlyPacket                 = errors.New("padding only packet that need not be forwarded")
 	ErrDuplicatePacket                   = errors.New("duplicate packet")
+	ErrSequenceNumberOffsetNotFound      = errors.New("sequence number offset not found")
 	ErrPaddingNotOnFrameBoundary         = errors.New("padding cannot send on non-frame boundary")
 	ErrDownTrackAlreadyBound             = errors.New("already bound")
 )
@@ -676,7 +677,10 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) error {
 		return err
 	}
 
-	extensions := []pacer.ExtensionData{{ID: uint8(d.dependencyDescriptorExtID), Payload: tp.ddBytes}}
+	var extensions []pacer.ExtensionData
+	if tp.ddBytes != nil {
+		extensions = []pacer.ExtensionData{{ID: uint8(d.dependencyDescriptorExtID), Payload: tp.ddBytes}}
+	}
 	if d.playoutDelayExtID != 0 && !d.playoudDelayAcked.Load() {
 		if val := d.playoutDelayBytes.Load(); val != nil {
 			extensions = append(extensions, pacer.ExtensionData{ID: uint8(d.playoutDelayExtID), Payload: val.([]byte)})
@@ -784,9 +788,8 @@ func (d *DownTrack) WritePaddingRTP(bytesToSend int, paddingOnMute bool, forceMa
 			TransportWideExtID: uint8(d.transportWideExtID),
 			WriteStream:        d.writeStream,
 			Metadata: sendPacketMetadata{
-				isPadding:       true,
-				disableCounter:  true,
-				disableRTPStats: paddingOnMute,
+				isPadding:      true,
+				disableCounter: true,
 			},
 			OnSent: d.packetSent,
 		})
@@ -1135,7 +1138,7 @@ func (d *DownTrack) ProvisionalAllocateReset() {
 	d.forwarder.ProvisionalAllocateReset()
 }
 
-func (d *DownTrack) ProvisionalAllocate(availableChannelCapacity int64, layers buffer.VideoLayer, allowPause bool, allowOvershoot bool) int64 {
+func (d *DownTrack) ProvisionalAllocate(availableChannelCapacity int64, layers buffer.VideoLayer, allowPause bool, allowOvershoot bool) (bool, int64) {
 	return d.forwarder.ProvisionalAllocate(availableChannelCapacity, layers, allowPause, allowOvershoot)
 }
 
@@ -1294,10 +1297,8 @@ func (d *DownTrack) writeBlankFrameRTP(duration float32, generation uint32) chan
 					AbsSendTimeExtID:   uint8(d.absSendTimeExtID),
 					TransportWideExtID: uint8(d.transportWideExtID),
 					WriteStream:        d.writeStream,
-					Metadata: sendPacketMetadata{
-						isBlankFrame: true,
-					},
-					OnSent: d.packetSent,
+					Metadata:           sendPacketMetadata{},
+					OnSent:             d.packetSent,
 				})
 
 				// only the first frame will need frameEndNeeded to close out the
@@ -1637,16 +1638,10 @@ func (d *DownTrack) translateVP8PacketTo(pkt *rtp.Packet, incomingVP8 *buffer.VP
 }
 
 func (d *DownTrack) DebugInfo() map[string]interface{} {
-	rtpMungerParams := d.forwarder.GetRTPMungerParams()
 	stats := map[string]interface{}{
-		"HighestIncomingSN": rtpMungerParams.highestIncomingSN,
-		"LastSN":            rtpMungerParams.lastSN,
-		"SNOffset":          rtpMungerParams.snOffset,
-		"LastTS":            rtpMungerParams.lastTS,
-		"TSOffset":          rtpMungerParams.tsOffset,
-		"LastMarker":        rtpMungerParams.lastMarker,
-		"LastPli":           d.rtpStats.LastPli(),
+		"LastPli": d.rtpStats.LastPli(),
 	}
+	stats["RTPMunger"] = d.forwarder.RTPMungerDebugInfo()
 
 	senderReport := d.CreateSenderReport()
 	if senderReport != nil {
@@ -1706,7 +1701,7 @@ func (d *DownTrack) getDeltaStatsOverridden() map[uint32]*buffer.StreamStatsWith
 }
 
 func (d *DownTrack) GetNackStats() (totalPackets uint32, totalRepeatedNACKs uint32) {
-	totalPackets = d.rtpStats.GetTotalPacketsPrimary()
+	totalPackets = uint32(d.rtpStats.GetTotalPacketsPrimary())
 	totalRepeatedNACKs = d.totalRepeatedNACKs.Load()
 	return
 }
@@ -1791,11 +1786,8 @@ func (d *DownTrack) sendSilentFrameOnMuteForOpus() {
 				AbsSendTimeExtID:   uint8(d.absSendTimeExtID),
 				TransportWideExtID: uint8(d.transportWideExtID),
 				WriteStream:        d.writeStream,
-				Metadata: sendPacketMetadata{
-					isBlankFrame:    true,
-					disableRTPStats: true,
-				},
-				OnSent: d.packetSent,
+				Metadata:           sendPacketMetadata{},
+				OnSent:             d.packetSent,
 			})
 		}
 
@@ -1812,16 +1804,14 @@ func (d *DownTrack) HandleRTCPSenderReportData(_payloadType webrtc.PayloadType, 
 }
 
 type sendPacketMetadata struct {
-	layer           int32
-	arrival         time.Time
-	isKeyFrame      bool
-	isRTX           bool
-	isPadding       bool
-	isBlankFrame    bool
-	disableCounter  bool
-	disableRTPStats bool
-	tp              *TranslationParams
-	pool            *[]byte
+	layer          int32
+	arrival        time.Time
+	isKeyFrame     bool
+	isRTX          bool
+	isPadding      bool
+	disableCounter bool
+	tp             *TranslationParams
+	pool           *[]byte
 }
 
 func (d *DownTrack) packetSent(md interface{}, hdr *rtp.Header, payloadSize int, sendTime time.Time, sendError error) {
@@ -1839,10 +1829,9 @@ func (d *DownTrack) packetSent(md interface{}, hdr *rtp.Header, payloadSize int,
 		return
 	}
 
-	headerSize := hdr.MarshalSize()
 	if !spmd.disableCounter {
 		// STREAM-ALLOCATOR-TODO: remove this stream allocator bytes counter once stream allocator changes fully to pull bytes counter
-		size := uint32(headerSize + payloadSize)
+		size := uint32(hdr.MarshalSize() + payloadSize)
 		d.streamAllocatorBytesCounter.Add(size)
 		if spmd.isRTX {
 			d.bytesRetransmitted.Add(size)
@@ -1851,16 +1840,15 @@ func (d *DownTrack) packetSent(md interface{}, hdr *rtp.Header, payloadSize int,
 		}
 	}
 
-	if !spmd.disableRTPStats {
-		packetTime := spmd.arrival
-		if packetTime.IsZero() {
-			packetTime = sendTime
-		}
-		if spmd.isPadding {
-			d.rtpStats.Update(hdr, 0, payloadSize, packetTime)
-		} else {
-			d.rtpStats.Update(hdr, payloadSize, 0, packetTime)
-		}
+	// update RTPStats
+	packetTime := spmd.arrival
+	if packetTime.IsZero() {
+		packetTime = sendTime
+	}
+	if spmd.isPadding {
+		d.rtpStats.Update(hdr, 0, payloadSize, packetTime)
+	} else {
+		d.rtpStats.Update(hdr, payloadSize, 0, packetTime)
 	}
 
 	if spmd.isKeyFrame {

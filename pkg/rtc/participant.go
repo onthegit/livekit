@@ -16,6 +16,7 @@ package rtc
 
 import (
 	"context"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/pion/rtcp"
+	"github.com/pion/sctp"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 	"github.com/pkg/errors"
@@ -103,6 +105,7 @@ type ParticipantParams struct {
 	GetParticipantInfo           func(pID livekit.ParticipantID) *livekit.ParticipantInfo
 	ReconnectOnPublicationError  bool
 	ReconnectOnSubscriptionError bool
+	ReconnectOnDataChannelError  bool
 	VersionGenerator             utils.TimedVersionGenerator
 	TrackResolver                types.MediaTrackResolver
 	DisableDynacast              bool
@@ -836,7 +839,7 @@ func (p *ParticipantImpl) SetMigrateState(s types.MigrateState) {
 		return
 	}
 
-	p.params.Logger.Infow("SetMigrateState", "state", s)
+	p.params.Logger.Debugw("SetMigrateState", "state", s)
 	p.migrateState.Store(s)
 	p.dirty.Store(true)
 
@@ -885,23 +888,6 @@ func (p *ParticipantImpl) OnICEConfigChanged(f func(participant types.LocalParti
 //
 // signal connection methods
 //
-
-func (p *ParticipantImpl) GetAudioLevel() (level float64, active bool) {
-	level = 0
-	for _, pt := range p.GetPublishedTracks() {
-		mediaTrack := pt.(types.LocalMediaTrack)
-		if mediaTrack.Source() == livekit.TrackSource_MICROPHONE {
-			tl, ta := mediaTrack.GetAudioLevel()
-			if ta {
-				active = true
-				if tl > level {
-					level = tl
-				}
-			}
-		}
-	}
-	return
-}
 
 func (p *ParticipantImpl) GetConnectionQuality() *livekit.ConnectionQualityInfo {
 	numTracks := 0
@@ -1340,6 +1326,7 @@ func (p *ParticipantImpl) onDataMessage(kind livekit.DataPacket_Kind, data []byt
 		p.lock.RUnlock()
 		if onDataPacket != nil {
 			payload.User.ParticipantSid = string(p.params.SID)
+			payload.User.ParticipantIdentity = string(p.params.Identity)
 			onDataPacket(p, &dp)
 		}
 	default:
@@ -1552,7 +1539,7 @@ func (p *ParticipantImpl) onSubscribedMaxQualityChange(trackID livekit.TrackID, 
 		)
 	}
 
-	p.pubLogger.Infow(
+	p.pubLogger.Debugw(
 		"sending max subscribed quality",
 		"trackID", trackID,
 		"qualities", subscribedQualities,
@@ -1703,6 +1690,7 @@ func (p *ParticipantImpl) mediaTrackReceived(track *webrtc.TrackRemote, rtpRecei
 	)
 	mid := p.TransportManager.GetPublisherMid(rtpReceiver)
 	if mid == "" {
+		p.pendingTracksLock.Unlock()
 		p.pubLogger.Warnw("could not get mid for track", nil, "trackID", track.ID())
 		return nil, false
 	}
@@ -2158,6 +2146,8 @@ func (p *ParticipantImpl) IssueFullReconnect(reason types.ParticipantCloseReason
 		scr = types.SignallingCloseReasonFullReconnectPublicationError
 	case types.ParticipantCloseReasonSubscriptionError:
 		scr = types.SignallingCloseReasonFullReconnectSubscriptionError
+	case types.ParticipantCloseReasonDataChannelError:
+		scr = types.SignallingCloseReasonFullReconnectDataChannelError
 	case types.ParticipantCloseReasonNegotiateFailed:
 		scr = types.SignallingCloseReasonFullReconnectNegotiateFailed
 	}
@@ -2258,4 +2248,21 @@ func codecsFromMediaDescription(m *sdp.MediaDescription) (out []sdp.Codec, err e
 	}
 
 	return out, nil
+}
+
+func (p *ParticipantImpl) SendDataPacket(dp *livekit.DataPacket, data []byte) error {
+	if p.State() != livekit.ParticipantInfo_ACTIVE {
+		return ErrDataChannelUnavailable
+	}
+
+	err := p.TransportManager.SendDataPacket(dp, data)
+	if err != nil {
+		if (err == sctp.ErrStreamClosed || err == io.ErrClosedPipe) && p.params.ReconnectOnDataChannelError {
+			p.params.Logger.Infow("issuing full reconnect on data channel error")
+			p.IssueFullReconnect(types.ParticipantCloseReasonDataChannelError)
+		}
+	} else {
+		p.dataChannelStats.AddBytes(uint64(len(data)), true)
+	}
+	return err
 }

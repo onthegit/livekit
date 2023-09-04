@@ -31,7 +31,7 @@ import (
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/utils"
-	"github.com/livekit/psrpc"
+	"github.com/pion/sctp"
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
@@ -740,9 +740,7 @@ func (r *Room) sendRoomUpdate() {
 	roomInfo := r.ToProto()
 	// Send update to participants
 	for _, p := range r.GetParticipants() {
-		// new participants receive the update as part of JoinResponse
-		// skip inactive participants
-		if p.State() != livekit.ParticipantInfo_ACTIVE {
+		if !p.IsReady() {
 			continue
 		}
 
@@ -1071,6 +1069,15 @@ func (r *Room) pushAndDequeueUpdates(pi *livekit.ParticipantInfo, isImmediate bo
 				return nil
 			}
 		}
+	} else {
+		ep := r.GetParticipant(identity)
+		if ep != nil {
+			epi := ep.ToProto()
+			if epi.JoinedAt > pi.JoinedAt {
+				// older session update, newer session has already become active, so nothing to do
+				return nil
+			}
+		}
 	}
 
 	if shouldSend {
@@ -1276,6 +1283,7 @@ func (r *Room) DebugInfo() map[string]interface{} {
 func BroadcastDataPacketForRoom(r types.Room, source types.LocalParticipant, dp *livekit.DataPacket, logger logger.Logger) {
 	dest := dp.GetUser().GetDestinationSids()
 	var dpData []byte
+	destIdentities := dp.GetUser().GetDestinationIdentities()
 
 	participants := r.GetLocalParticipants()
 	capacity := len(dest)
@@ -1299,6 +1307,12 @@ func BroadcastDataPacketForRoom(r types.Room, source types.LocalParticipant, dp 
 					break
 				}
 			}
+			for _, dIdentity := range destIdentities {
+				if op.Identity() == livekit.ParticipantIdentity(dIdentity) {
+					found = true
+					break
+				}
+			}
 			if !found {
 				continue
 			}
@@ -1316,7 +1330,7 @@ func BroadcastDataPacketForRoom(r types.Room, source types.LocalParticipant, dp 
 
 	utils.ParallelExec(destParticipants, dataForwardLoadBalanceThreshold, 1, func(op types.LocalParticipant) {
 		err := op.SendDataPacket(dp, dpData)
-		if err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, psrpc.Canceled) {
+		if err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, sctp.ErrStreamClosed) {
 			op.GetLogger().Infow("send data packet error", "error", err)
 		}
 	})
