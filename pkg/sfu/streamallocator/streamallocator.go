@@ -499,6 +499,34 @@ func (s *StreamAllocator) OnActiveChanged(isActive bool) {
 	}
 }
 
+// called to check if track should participate in BWE
+func (s *StreamAllocator) IsBWEEnabled(downTrack *sfu.DownTrack) bool {
+	if !s.params.Config.DisableEstimationUnmanagedTracks {
+		return true
+	}
+
+	s.videoTracksMu.Lock()
+	defer s.videoTracksMu.Unlock()
+
+	if track := s.videoTracks[livekit.TrackID(downTrack.ID())]; track != nil {
+		return track.IsManaged()
+	}
+
+	return true
+}
+
+// called to check if track subscription mute can be applied
+func (s *StreamAllocator) IsSubscribeMutable(downTrack *sfu.DownTrack) bool {
+	s.videoTracksMu.Lock()
+	defer s.videoTracksMu.Unlock()
+
+	if track := s.videoTracks[livekit.TrackID(downTrack.ID())]; track != nil {
+		return track.IsSubscribeMutable()
+	}
+
+	return true
+}
+
 func (s *StreamAllocator) maybePostEventAllocateTrack(downTrack *sfu.DownTrack) {
 	shouldPost := false
 	s.videoTracksMu.Lock()
@@ -883,8 +911,8 @@ func (s *StreamAllocator) allocateTrack(track *Track) {
 		return
 	}
 
-	// already streaming at some layer and transition is not requesting any change, i. e. BandwidthDelta == 0
-	if transition.From.IsValid() && transition.BandwidthDelta == 0 {
+	// a no-op transition
+	if transition.From == transition.To {
 		return
 	}
 
@@ -1097,7 +1125,9 @@ func (s *StreamAllocator) allocateAllTracks() {
 		updateStreamStateChange(track, allocation, update)
 
 		// STREAM-ALLOCATOR-TODO: optimistic allocation before bitrate is available will return 0. How to account for that?
-		availableChannelCapacity -= allocation.BandwidthRequested
+		if !s.params.Config.DisableEstimationUnmanagedTracks {
+			availableChannelCapacity -= allocation.BandwidthRequested
+		}
 	}
 
 	if availableChannelCapacity < 0 {

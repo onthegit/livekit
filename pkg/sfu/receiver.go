@@ -223,10 +223,10 @@ func NewWebRTCReceiver(
 	})
 
 	w.connectionStats = connectionquality.NewConnectionStats(connectionquality.ConnectionStatsParams{
-		MimeType:      w.codec.MimeType,
-		IsFECEnabled:  strings.EqualFold(w.codec.MimeType, webrtc.MimeTypeOpus) && strings.Contains(strings.ToLower(w.codec.SDPFmtpLine), "fec"),
-		GetDeltaStats: w.getDeltaStats,
-		Logger:        w.logger.WithValues("direction", "up"),
+		MimeType:         w.codec.MimeType,
+		IsFECEnabled:     strings.EqualFold(w.codec.MimeType, webrtc.MimeTypeOpus) && strings.Contains(strings.ToLower(w.codec.SDPFmtpLine), "fec"),
+		ReceiverProvider: w,
+		Logger:           w.logger.WithValues("direction", "up"),
 	})
 	w.connectionStats.OnStatsUpdate(func(_cs *connectionquality.ConnectionStats, stat *livekit.AnalyticsStat) {
 		if w.onStatsUpdate != nil {
@@ -539,7 +539,7 @@ func (w *WebRTCReceiver) getBufferLocked(layer int32) *buffer.Buffer {
 		layer = 0
 	}
 
-	if int(layer) >= len(w.buffers) {
+	if layer < 0 || int(layer) >= len(w.buffers) {
 		return nil
 	}
 
@@ -595,7 +595,7 @@ func (w *WebRTCReceiver) GetAudioLevel() (float64, bool) {
 	return 0, false
 }
 
-func (w *WebRTCReceiver) getDeltaStats() map[uint32]*buffer.StreamStatsWithLayers {
+func (w *WebRTCReceiver) GetDeltaStats() map[uint32]*buffer.StreamStatsWithLayers {
 	w.bufferMu.RLock()
 	defer w.bufferMu.RUnlock()
 

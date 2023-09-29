@@ -29,6 +29,7 @@ import (
 	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/interceptor/pkg/twcc"
 	"github.com/pion/rtcp"
+	"github.com/pion/sctp"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
 	"github.com/pkg/errors"
@@ -59,7 +60,7 @@ const (
 	dtlsRetransmissionInterval = 100 * time.Millisecond
 
 	iceDisconnectedTimeout = 10 * time.Second // compatible for ice-lite with firefox client
-	iceFailedTimeout       = 25 * time.Second // pion's default
+	iceFailedTimeout       = 5 * time.Second  // time between disconnected and failed
 	iceKeepaliveInterval   = 2 * time.Second  // pion's default
 
 	minTcpICEConnectTimeout = 5 * time.Second
@@ -831,7 +832,9 @@ func (t *PCTransport) CreateDataChannel(label string, dci *webrtc.DataChannelIni
 	}
 
 	dcErrorHandler := func(err error) {
-		t.params.Logger.Errorw(dc.Label()+" data channel error", err)
+		if !errors.Is(err, sctp.ErrResetPacketInStateNotExist) && !errors.Is(err, sctp.ErrChunk) {
+			t.params.Logger.Errorw(dc.Label()+" data channel error", err)
+		}
 	}
 
 	t.lock.Lock()
@@ -1440,6 +1443,7 @@ func (t *PCTransport) processEvents() {
 
 	t.clearSignalStateCheckTimer()
 	t.params.Logger.Debugw("leaving events processor")
+	t.handleLogICECandidates(nil)
 }
 
 func (t *PCTransport) handleEvent(e *event) error {
