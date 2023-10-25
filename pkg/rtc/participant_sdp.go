@@ -180,7 +180,10 @@ func (p *ParticipantImpl) setCodecPreferencesVideoForPublisher(offer webrtc.Sess
 			}
 
 			unmatchVideo.MediaName.Formats = append(unmatchVideo.MediaName.Formats[:0], preferredCodecs...)
-			unmatchVideo.MediaName.Formats = append(unmatchVideo.MediaName.Formats, leftCodecs...)
+			// if the client don't comply with codec order in SDP answer, only keep preferred codecs to force client to use it
+			if p.params.ClientInfo.ComplyWithCodecOrderInSDPAnswer() {
+				unmatchVideo.MediaName.Formats = append(unmatchVideo.MediaName.Formats, leftCodecs...)
+			}
 		}
 	}
 
@@ -252,7 +255,7 @@ func (p *ParticipantImpl) configurePublisherAnswer(answer webrtc.SessionDescript
 
 			opusPT, err := parsed.GetPayloadTypeForCodec(sdp.Codec{Name: "opus"})
 			if err != nil {
-				p.pubLogger.Infow("failed to get opus payload type", "error", err, "trakcID", ti.Sid)
+				p.pubLogger.Infow("failed to get opus payload type", "error", err, "trackID", ti.Sid)
 				continue
 			}
 

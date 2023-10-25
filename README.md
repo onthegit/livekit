@@ -15,7 +15,7 @@ LiveKit's server is written in Go, using the awesome [Pion WebRTC](https://githu
 
 [![GitHub stars](https://img.shields.io/github/stars/livekit/livekit?style=social&label=Star&maxAge=2592000)](https://github.com/livekit/livekit/stargazers/)
 [![Slack community](https://img.shields.io/endpoint?url=https%3A%2F%2Flivekit.io%2Fbadges%2Fslack)](https://livekit.io/join-slack)
-[![Twitter Follow](https://img.shields.io/twitter/follow/livekitted)](https://twitter.com/livekitted)
+[![Twitter Follow](https://img.shields.io/twitter/follow/livekit)](https://twitter.com/livekit)
 [![GitHub release (latest SemVer)](https://img.shields.io/github/v/release/livekit/livekit)](https://github.com/livekit/livekit/releases/latest)
 [![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/livekit/livekit/buildtest.yaml?branch=master)](https://github.com/livekit/livekit/actions/workflows/buildtest.yaml)
 [![License](https://img.shields.io/github/license/livekit/livekit)](https://github.com/livekit/livekit/blob/master/LICENSE)
@@ -272,7 +272,7 @@ Read our [deployment docs](https://docs.livekit.io/deploy/) for more information
 
 Pre-requisites:
 
-- Go 1.18+ is installed
+- Go 1.20+ is installed
 - GOPATH/bin is in your PATH
 
 Then run

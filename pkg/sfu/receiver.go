@@ -81,7 +81,7 @@ type TrackReceiver interface {
 	GetTemporalLayerFpsForSpatial(layer int32) []float32
 
 	GetCalculatedClockRate(layer int32) uint32
-	GetReferenceLayerRTPTimestamp(ets uint64, layer int32, referenceLayer int32) (uint64, error)
+	GetReferenceLayerRTPTimestamp(ts uint32, layer int32, referenceLayer int32) (uint32, error)
 }
 
 // WebRTCReceiver receives a media track
@@ -210,9 +210,6 @@ func NewWebRTCReceiver(
 		isRED:     IsRedCodec(track.Codec().MimeType),
 	}
 
-	w.streamTrackerManager = NewStreamTrackerManager(logger, trackInfo, w.isSVC, w.codec.ClockRate, trackersConfig)
-	w.streamTrackerManager.SetListener(w)
-
 	for _, opt := range opts {
 		w = opt(w)
 	}
@@ -235,6 +232,8 @@ func NewWebRTCReceiver(
 	})
 	w.connectionStats.Start(w.trackInfo)
 
+	w.streamTrackerManager = NewStreamTrackerManager(logger, trackInfo, w.isSVC, w.codec.ClockRate, trackersConfig)
+	w.streamTrackerManager.SetListener(w)
 	// SVC-TODO: Handle DD for non-SVC cases???
 	if w.isSVC {
 		for _, ext := range receiver.GetParameters().HeaderExtensions {
@@ -777,8 +776,8 @@ func (w *WebRTCReceiver) GetCalculatedClockRate(layer int32) uint32 {
 	return w.streamTrackerManager.GetCalculatedClockRate(layer)
 }
 
-func (w *WebRTCReceiver) GetReferenceLayerRTPTimestamp(ets uint64, layer int32, referenceLayer int32) (uint64, error) {
-	return w.streamTrackerManager.GetReferenceLayerRTPTimestamp(ets, layer, referenceLayer)
+func (w *WebRTCReceiver) GetReferenceLayerRTPTimestamp(ts uint32, layer int32, referenceLayer int32) (uint32, error) {
+	return w.streamTrackerManager.GetReferenceLayerRTPTimestamp(ts, layer, referenceLayer)
 }
 
 // closes all track senders in parallel, returns when all are closed

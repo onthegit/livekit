@@ -38,10 +38,12 @@ import (
 // Forwarder
 const (
 	FlagPauseOnDowngrade  = true
-	FlagFilterRTX         = true
+	FlagFilterRTX         = false
+	FlagFilterRTXLayers   = true
 	TransitionCostSpatial = 10
 
 	ResumeBehindThresholdSeconds      = float64(0.2)   // 200ms
+	ResumeBehindHighTresholdSeconds   = float64(2.0)   // 2 seconds
 	LayerSwitchBehindThresholdSeconds = float64(0.05)  // 50ms
 	SwitchAheadThresholdSeconds       = float64(0.025) // 25ms
 )
@@ -187,7 +189,7 @@ type Forwarder struct {
 	codec                         webrtc.RTPCodecCapability
 	kind                          webrtc.RTPCodecType
 	logger                        logger.Logger
-	getReferenceLayerRTPTimestamp func(ets uint64, layer int32, referenceLayer int32) (uint64, error)
+	getReferenceLayerRTPTimestamp func(ts uint32, layer int32, referenceLayer int32) (uint32, error)
 	getExpectedRTPTimestamp       func(at time.Time) (uint64, error)
 
 	muted                 bool
@@ -215,7 +217,7 @@ type Forwarder struct {
 func NewForwarder(
 	kind webrtc.RTPCodecType,
 	logger logger.Logger,
-	getReferenceLayerRTPTimestamp func(ets uint64, layer int32, referenceLayer int32) (uint64, error),
+	getReferenceLayerRTPTimestamp func(ts uint32, layer int32, referenceLayer int32) (uint32, error),
 	getExpectedRTPTimestamp func(at time.Time) (uint64, error),
 ) *Forwarder {
 	f := &Forwarder{
@@ -1398,15 +1400,14 @@ func (f *Forwarder) CheckSync() (locked bool, layer int32) {
 }
 
 func (f *Forwarder) FilterRTX(nacks []uint16) (filtered []uint16, disallowedLayers [buffer.DefaultMaxLayerSpatial + 1]bool) {
-	if !FlagFilterRTX {
-		filtered = nacks
-		return
-	}
-
 	f.lock.RLock()
 	defer f.lock.RUnlock()
 
-	filtered = f.rtpMunger.FilterRTX(nacks)
+	if !FlagFilterRTX {
+		filtered = nacks
+	} else {
+		filtered = f.rtpMunger.FilterRTX(nacks)
+	}
 
 	//
 	// Curb RTX when deficient for two cases
@@ -1416,14 +1417,15 @@ func (f *Forwarder) FilterRTX(nacks []uint16) (filtered []uint16, disallowedLaye
 	//
 	// Without the curb, when congestion hits, RTX rate could be so high that it further congests the channel.
 	//
-	currentLayer := f.vls.GetCurrent()
-	targetLayer := f.vls.GetTarget()
-	for layer := int32(0); layer < buffer.DefaultMaxLayerSpatial+1; layer++ {
-		if f.isDeficientLocked() && (targetLayer.Spatial < currentLayer.Spatial || layer > currentLayer.Spatial) {
-			disallowedLayers[layer] = true
+	if FlagFilterRTXLayers {
+		currentLayer := f.vls.GetCurrent()
+		targetLayer := f.vls.GetTarget()
+		for layer := int32(0); layer < buffer.DefaultMaxLayerSpatial+1; layer++ {
+			if f.isDeficientLocked() && (targetLayer.Spatial < currentLayer.Spatial || layer > currentLayer.Spatial) {
+				disallowedLayers[layer] = true
+			}
 		}
 	}
-
 	return
 }
 
@@ -1499,11 +1501,11 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 	// But, cases like muting/unmuting, clock vagaries, pacing, etc. make them not satisfy those conditions always.
 	rtpMungerState := f.rtpMunger.GetLast()
 	extLastTS := rtpMungerState.ExtLastTS
-	extRefTS := extLastTS
 	extExpectedTS := extLastTS
+	extRefTS := extExpectedTS
 	switchingAt := time.Now()
 	if f.getReferenceLayerRTPTimestamp != nil {
-		ets, err := f.getReferenceLayerRTPTimestamp(extPkt.ExtTimestamp, layer, f.referenceLayerSpatial)
+		ts, err := f.getReferenceLayerRTPTimestamp(extPkt.Packet.Timestamp, layer, f.referenceLayerSpatial)
 		if err != nil {
 			// error out if extRefTS is not available. It can happen when there is no sender report
 			// for the layer being switched to. Can especially happen at the start of the track when layer switches are
@@ -1513,7 +1515,15 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 			return err
 		}
 
-		extRefTS = ets
+		extRefTS = (extRefTS & 0xFFFF_FFFF_0000_0000) + uint64(ts)
+
+		expectedTS32 := uint32(extExpectedTS)
+		if (ts-expectedTS32) < 1<<31 && ts < expectedTS32 {
+			extRefTS += (1 << 32)
+		}
+		if (expectedTS32-ts) < 1<<31 && expectedTS32 < ts && extRefTS >= 1<<32 {
+			extRefTS -= (1 << 32)
+		}
 	}
 
 	if f.getExpectedRTPTimestamp != nil {
@@ -1568,6 +1578,10 @@ func (f *Forwarder) processSourceSwitch(extPkt *buffer.ExtPacket, layer int32) e
 		if diffSeconds >= 0.0 {
 			if f.resumeBehindThreshold > 0 && diffSeconds > f.resumeBehindThreshold {
 				logTransition("resume, reference too far behind", extExpectedTS, extRefTS, extLastTS, diffSeconds)
+				extNextTS = extExpectedTS
+			} else if diffSeconds > ResumeBehindHighTresholdSeconds {
+				// could be due to incorrect reference calculation
+				logTransition("resume, reference very far behind", extExpectedTS, extRefTS, extLastTS, diffSeconds)
 				extNextTS = extExpectedTS
 			} else {
 				extNextTS = extRefTS
@@ -1677,7 +1691,7 @@ func (f *Forwarder) getTranslationParamsVideo(extPkt *buffer.ExtPacket, layer in
 		tp.shouldDrop = true
 		if f.started && result.IsRelevant {
 			// call to update highest incoming sequence number and other internal structures
-			if _, err := f.rtpMunger.UpdateAndGetSnTs(extPkt); err == nil {
+			if tpRTP, err := f.rtpMunger.UpdateAndGetSnTs(extPkt); err == nil && tpRTP.snOrdering == SequenceNumberOrderingContiguous {
 				f.rtpMunger.PacketDropped(extPkt)
 			}
 		}
@@ -1769,7 +1783,7 @@ func (f *Forwarder) maybeStart() {
 	f.rtpMunger.SetLastSnTs(extPkt)
 
 	f.extFirstTS = uint64(timestamp)
-	f.logger.Debugw(
+	f.logger.Infow(
 		"starting with dummy forwarding",
 		"sequenceNumber", extPkt.Packet.SequenceNumber,
 		"timestamp", extPkt.Packet.Timestamp,

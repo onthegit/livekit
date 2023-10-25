@@ -32,7 +32,7 @@ const (
 	cFirstSnapshotID     = 1
 
 	cFirstPacketTimeAdjustWindow    = 2 * time.Minute
-	cFirstPacketTimeAdjustThreshold = 5 * time.Second
+	cFirstPacketTimeAdjustThreshold = 5 * time.Minute
 )
 
 // -------------------------------------------------------
@@ -105,15 +105,24 @@ type snapshot struct {
 	maxJitter float64
 }
 
+// ------------------------------------------------------------------
+
 type RTCPSenderReportData struct {
-	RTPTimestamp     uint32
-	RTPTimestampExt  uint64
-	NTPTimestamp     mediatransportutil.NtpTime
-	PacketCount      uint32
-	PacketCountExt   uint64
-	PaddingOnlyDrops uint64
-	At               time.Time
+	RTPTimestamp    uint32
+	RTPTimestampExt uint64
+	NTPTimestamp    mediatransportutil.NtpTime
+	At              time.Time
 }
+
+func (r *RTCPSenderReportData) ToString() string {
+	if r == nil {
+		return ""
+	}
+
+	return fmt.Sprintf("ntp: %s, rtp: %d, extRtp: %d, at: %s", r.NTPTimestamp.Time().String(), r.RTPTimestamp, r.RTPTimestampExt, r.At.String())
+}
+
+// ------------------------------------------------------------------
 
 type RTPStatsParams struct {
 	ClockRate uint32
@@ -456,7 +465,7 @@ func (r *rtpStatsBase) GetRtt() uint32 {
 	return r.rtt
 }
 
-func (r *rtpStatsBase) maybeAdjustFirstPacketTime(ets uint64, extStartTS uint64) {
+func (r *rtpStatsBase) maybeAdjustFirstPacketTime(ts uint32, startTS uint32) {
 	if time.Since(r.startTime) > cFirstPacketTimeAdjustWindow {
 		return
 	}
@@ -467,14 +476,15 @@ func (r *rtpStatsBase) maybeAdjustFirstPacketTime(ets uint64, extStartTS uint64)
 	// abnormal delay (maybe due to pacing or maybe due to queuing
 	// in some network element along the way), push back first time
 	// to an earlier instance.
-	samplesDiff := int64(ets - extStartTS)
+	samplesDiff := int32(ts - startTS)
 	if samplesDiff < 0 {
 		// out-of-order, skip
 		return
 	}
 
 	samplesDuration := time.Duration(float64(samplesDiff) / float64(r.params.ClockRate) * float64(time.Second))
-	now := time.Now()
+	timeSinceFirst := time.Since(r.firstTime)
+	now := r.firstTime.Add(timeSinceFirst)
 	firstTime := now.Add(-samplesDuration)
 	if firstTime.Before(r.firstTime) {
 		r.logger.Debugw(
@@ -483,9 +493,9 @@ func (r *rtpStatsBase) maybeAdjustFirstPacketTime(ets uint64, extStartTS uint64)
 			"nowTime", now.String(),
 			"before", r.firstTime.String(),
 			"after", firstTime.String(),
-			"adjustment", r.firstTime.Sub(firstTime),
-			"extNowTS", ets,
-			"extStartTS", extStartTS,
+			"adjustment", r.firstTime.Sub(firstTime).String(),
+			"nowTS", ts,
+			"startTS", startTS,
 		)
 		if r.firstTime.Sub(firstTime) > cFirstPacketTimeAdjustThreshold {
 			r.logger.Infow("first packet time adjustment too big, ignoring",
@@ -493,9 +503,9 @@ func (r *rtpStatsBase) maybeAdjustFirstPacketTime(ets uint64, extStartTS uint64)
 				"nowTime", now.String(),
 				"before", r.firstTime.String(),
 				"after", firstTime.String(),
-				"adjustment", r.firstTime.Sub(firstTime),
-				"extNowTS", ets,
-				"extStartTS", extStartTS,
+				"adjustment", r.firstTime.Sub(firstTime).String(),
+				"nowTS", ts,
+				"startTS", startTS,
 			)
 		} else {
 			r.firstTime = firstTime
@@ -529,9 +539,14 @@ func (r *rtpStatsBase) deltaInfo(snapshotID uint32, extStartSN uint64, extHighes
 
 	packetsExpected := now.extStartSN - then.extStartSN
 	if packetsExpected > cNumSequenceNumbers {
-		r.logger.Errorw(
+		r.logger.Infow(
 			"too many packets expected in delta",
-			fmt.Errorf("start: %d, end: %d, expected: %d", then.extStartSN, now.extStartSN, packetsExpected),
+			"startSN", then.extStartSN,
+			"endSN", now.extStartSN,
+			"packetsExpected", packetsExpected,
+			"startTime", startTime,
+			"endTime", endTime,
+			"duration", endTime.Sub(startTime).String(),
 		)
 		return nil
 	}
@@ -546,16 +561,26 @@ func (r *rtpStatsBase) deltaInfo(snapshotID uint32, extStartSN uint64, extHighes
 	if int32(packetsLost) < 0 {
 		packetsLost = 0
 	}
+
+	// padding packets delta could be higher than expected due to out-of-order padding packets
+	packetsPadding := now.packetsPadding - then.packetsPadding
+	if packetsExpected < packetsPadding {
+		r.logger.Infow("padding packets more than expected", "packetsExpected", packetsExpected, "packetsPadding", packetsPadding)
+		packetsExpected = 0
+	} else {
+		packetsExpected -= packetsPadding
+	}
+
 	return &RTPDeltaInfo{
 		StartTime:            startTime,
 		Duration:             endTime.Sub(startTime),
-		Packets:              uint32(packetsExpected - (now.packetsPadding - then.packetsPadding)),
+		Packets:              uint32(packetsExpected),
 		Bytes:                now.bytes - then.bytes,
 		HeaderBytes:          now.headerBytes - then.headerBytes,
 		PacketsDuplicate:     uint32(now.packetsDuplicate - then.packetsDuplicate),
 		BytesDuplicate:       now.bytesDuplicate - then.bytesDuplicate,
 		HeaderBytesDuplicate: now.headerBytesDuplicate - then.headerBytesDuplicate,
-		PacketsPadding:       uint32(now.packetsPadding - then.packetsPadding),
+		PacketsPadding:       uint32(packetsPadding),
 		BytesPadding:         now.bytesPadding - then.bytesPadding,
 		HeaderBytesPadding:   now.headerBytesPadding - then.headerBytesPadding,
 		PacketsLost:          packetsLost,

@@ -35,6 +35,7 @@ import (
 func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*LivekitServer, error) {
 	roomConfig := getRoomConf(conf)
 	apiConfig := config.DefaultAPIConfig()
+	psrpcConfig := getPSRPCConfig(conf)
 	universalClient, err := createRedisClient(conf)
 	if err != nil {
 		return nil, err
@@ -57,6 +58,7 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 		return nil, err
 	}
 	egressStore := getEgressStore(objectStore)
+	ingressStore := getIngressStore(objectStore)
 	keyProvider, err := createKeyProvider(conf)
 	if err != nil {
 		return nil, err
@@ -67,28 +69,32 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 	}
 	analyticsService := telemetry.NewAnalyticsService(conf, currentNode)
 	telemetryService := telemetry.NewTelemetryService(queuedNotifier, analyticsService)
-	rtcEgressLauncher := NewEgressLauncher(egressClient, egressStore, telemetryService)
-	roomService, err := NewRoomService(roomConfig, apiConfig, router, roomAllocator, objectStore, rtcEgressLauncher)
+	ioInfoService, err := NewIOInfoService(nodeID, messageBus, egressStore, ingressStore, telemetryService)
 	if err != nil {
 		return nil, err
 	}
-	egressService := NewEgressService(egressClient, objectStore, egressStore, roomService, telemetryService, rtcEgressLauncher)
+	rtcEgressLauncher := NewEgressLauncher(egressClient, ioInfoService)
+	topicFormatter := routing.NewTopicFormatter()
+	roomClient, err := routing.NewRoomClient(nodeID, messageBus, psrpcConfig)
+	if err != nil {
+		return nil, err
+	}
+	roomService, err := NewRoomService(roomConfig, apiConfig, psrpcConfig, router, roomAllocator, objectStore, rtcEgressLauncher, topicFormatter, roomClient)
+	if err != nil {
+		return nil, err
+	}
+	egressService := NewEgressService(egressClient, objectStore, ioInfoService, roomService, rtcEgressLauncher)
 	ingressConfig := getIngressConfig(conf)
 	ingressClient, err := rpc.NewIngressClient(nodeID, messageBus)
 	if err != nil {
 		return nil, err
 	}
-	ingressStore := getIngressStore(objectStore)
 	ingressService := NewIngressService(ingressConfig, nodeID, messageBus, ingressClient, ingressStore, roomService, telemetryService)
-	ioInfoService, err := NewIOInfoService(nodeID, messageBus, egressStore, ingressStore, telemetryService)
-	if err != nil {
-		return nil, err
-	}
 	rtcService := NewRTCService(conf, roomAllocator, objectStore, router, currentNode, telemetryService)
 	clientConfigurationManager := createClientConfiguration()
 	timedVersionGenerator := utils.NewDefaultTimedVersionGenerator()
 	turnAuthHandler := NewTURNAuthHandler(keyProvider)
-	roomManager, err := NewLocalRoomManager(conf, objectStore, currentNode, router, telemetryService, clientConfigurationManager, rtcEgressLauncher, timedVersionGenerator, turnAuthHandler)
+	roomManager, err := NewLocalRoomManager(conf, objectStore, currentNode, router, telemetryService, clientConfigurationManager, rtcEgressLauncher, timedVersionGenerator, turnAuthHandler, messageBus)
 	if err != nil {
 		return nil, err
 	}
@@ -225,6 +231,10 @@ func getRoomConf(config2 *config.Config) config.RoomConfig {
 
 func getSignalRelayConfig(config2 *config.Config) config.SignalRelayConfig {
 	return config2.SignalRelay
+}
+
+func getPSRPCConfig(config2 *config.Config) config.PSRPCConfig {
+	return config2.PSRPC
 }
 
 func newInProcessTurnServer(conf *config.Config, authHandler turn.AuthHandler) (*turn.Server, error) {

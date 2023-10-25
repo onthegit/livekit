@@ -23,9 +23,7 @@ import (
 	"github.com/livekit/livekit-server/pkg/sfu/utils"
 )
 
-//
 // RTPMunger
-//
 type SequenceNumberOrdering int
 
 const (
@@ -56,10 +54,11 @@ type RTPMungerState struct {
 	ExtLastSN       uint64
 	ExtSecondLastSN uint64
 	ExtLastTS       uint64
+	ExtSecondLastTS uint64
 }
 
 func (r RTPMungerState) String() string {
-	return fmt.Sprintf("RTPMungerState{extLastSN: %d, extSecondLastSN: %d, extLastTS: %d)", r.ExtLastSN, r.ExtSecondLastSN, r.ExtLastTS)
+	return fmt.Sprintf("RTPMungerState{extLastSN: %d, extSecondLastSN: %d, extLastTS: %d, extSecondLastTS: %d)", r.ExtLastSN, r.ExtSecondLastSN, r.ExtLastTS, r.ExtSecondLastTS)
 }
 
 // ----------------------------------------------------------------------
@@ -74,8 +73,9 @@ type RTPMunger struct {
 	extSecondLastSN uint64
 	snOffset        uint64
 
-	extLastTS uint64
-	tsOffset  uint64
+	extLastTS       uint64
+	extSecondLastTS uint64
+	tsOffset        uint64
 
 	lastMarker bool
 
@@ -97,6 +97,7 @@ func (r *RTPMunger) DebugInfo() map[string]interface{} {
 		"ExtSecondLastSN":      r.extSecondLastSN,
 		"SNOffset":             r.snOffset,
 		"ExtLastTS":            r.extLastTS,
+		"ExtSecondLastTS":      r.extSecondLastTS,
 		"TSOffset":             r.tsOffset,
 		"LastMarker":           r.lastMarker,
 	}
@@ -107,6 +108,7 @@ func (r *RTPMunger) GetLast() RTPMungerState {
 		ExtLastSN:       r.extLastSN,
 		ExtSecondLastSN: r.extSecondLastSN,
 		ExtLastTS:       r.extLastTS,
+		ExtSecondLastTS: r.extSecondLastTS,
 	}
 }
 
@@ -114,6 +116,7 @@ func (r *RTPMunger) SeedLast(state RTPMungerState) {
 	r.extLastSN = state.ExtLastSN
 	r.extSecondLastSN = state.ExtSecondLastSN
 	r.extLastTS = state.ExtLastTS
+	r.extSecondLastTS = state.ExtSecondLastTS
 }
 
 func (r *RTPMunger) SetLastSnTs(extPkt *buffer.ExtPacket) {
@@ -121,15 +124,17 @@ func (r *RTPMunger) SetLastSnTs(extPkt *buffer.ExtPacket) {
 
 	r.extLastSN = extPkt.ExtSequenceNumber
 	r.extSecondLastSN = r.extLastSN - 1
+	r.snRangeMap.ClearAndResetValue(extPkt.ExtSequenceNumber, 0)
 	r.updateSnOffset()
 
 	r.extLastTS = extPkt.ExtTimestamp
+	r.extSecondLastTS = extPkt.ExtTimestamp
 }
 
 func (r *RTPMunger) UpdateSnTsOffsets(extPkt *buffer.ExtPacket, snAdjust uint64, tsAdjust uint64) {
 	r.extHighestIncomingSN = extPkt.ExtSequenceNumber - 1
 
-	r.snRangeMap.ClearAndResetValue(extPkt.ExtSequenceNumber - r.extLastSN - snAdjust)
+	r.snRangeMap.ClearAndResetValue(extPkt.ExtSequenceNumber, extPkt.ExtSequenceNumber-r.extLastSN-snAdjust)
 	r.updateSnOffset()
 
 	r.tsOffset = extPkt.ExtTimestamp - r.extLastTS - tsAdjust
@@ -157,6 +162,8 @@ func (r *RTPMunger) PacketDropped(extPkt *buffer.ExtPacket) {
 
 	r.extLastSN = r.extSecondLastSN
 	r.updateSnOffset()
+
+	r.extLastTS = r.extSecondLastTS
 }
 
 func (r *RTPMunger) UpdateAndGetSnTs(extPkt *buffer.ExtPacket) (*TranslationParamsRTP, error) {
@@ -175,6 +182,7 @@ func (r *RTPMunger) UpdateAndGetSnTs(extPkt *buffer.ExtPacket) (*TranslationPara
 
 		r.extSecondLastSN = r.extLastSN
 		r.extLastSN = extMungedSN
+		r.extSecondLastTS = r.extLastTS
 		r.extLastTS = extMungedTS
 		r.lastMarker = extPkt.Packet.Marker
 
@@ -203,9 +211,25 @@ func (r *RTPMunger) UpdateAndGetSnTs(extPkt *buffer.ExtPacket) (*TranslationPara
 			}, ErrOutOfOrderSequenceNumberCacheMiss
 		}
 
+		extSequenceNumber := extPkt.ExtSequenceNumber - snOffset
+		if extSequenceNumber >= r.extLastSN {
+			// should not happen, just being paranoid
+			r.logger.Errorw(
+				"unexpected packet ordering", nil,
+				"extIncomingSN", extPkt.ExtSequenceNumber,
+				"extHighestIncomingSN", r.extHighestIncomingSN,
+				"extLastSN", r.extLastSN,
+				"snOffsetIncoming", snOffset,
+				"snOffsetHighest", r.snOffset,
+			)
+			return &TranslationParamsRTP{
+				snOrdering: SequenceNumberOrderingOutOfOrder,
+			}, ErrOutOfOrderSequenceNumberCacheMiss
+		}
+
 		return &TranslationParamsRTP{
 			snOrdering:        SequenceNumberOrderingOutOfOrder,
-			extSequenceNumber: extPkt.ExtSequenceNumber - snOffset,
+			extSequenceNumber: extSequenceNumber,
 			extTimestamp:      extPkt.ExtTimestamp - r.tsOffset,
 		}, nil
 	}
@@ -291,6 +315,11 @@ func (r *RTPMunger) UpdateAndGetPaddingSnTs(num int, clockRate uint32, frameRate
 	r.snRangeMap.DecValue(r.extHighestIncomingSN, uint64(num))
 	r.updateSnOffset()
 
+	if len(vals) == 1 {
+		r.extSecondLastTS = r.extLastTS
+	} else {
+		r.extSecondLastTS = vals[len(vals)-2].extTimestamp
+	}
 	r.tsOffset -= extLastTS - r.extLastTS
 	r.extLastTS = extLastTS
 

@@ -49,24 +49,25 @@ const (
 )
 
 type TransportManagerParams struct {
-	Identity                 livekit.ParticipantIdentity
-	SID                      livekit.ParticipantID
-	SubscriberAsPrimary      bool
-	Config                   *WebRTCConfig
-	ProtocolVersion          types.ProtocolVersion
-	Telemetry                telemetry.TelemetryService
-	CongestionControlConfig  config.CongestionControlConfig
-	EnabledCodecs            []*livekit.Codec
-	SimTracks                map[uint32]SimulcastTrackInfo
-	ClientConf               *livekit.ClientConfiguration
-	ClientInfo               ClientInfo
-	Migration                bool
-	AllowTCPFallback         bool
-	TCPFallbackRTTThreshold  int
-	AllowUDPUnstableFallback bool
-	TURNSEnabled             bool
-	AllowPlayoutDelay        bool
-	Logger                   logger.Logger
+	Identity                     livekit.ParticipantIdentity
+	SID                          livekit.ParticipantID
+	SubscriberAsPrimary          bool
+	Config                       *WebRTCConfig
+	ProtocolVersion              types.ProtocolVersion
+	Telemetry                    telemetry.TelemetryService
+	CongestionControlConfig      config.CongestionControlConfig
+	EnabledCodecs                []*livekit.Codec
+	SimTracks                    map[uint32]SimulcastTrackInfo
+	ClientConf                   *livekit.ClientConfiguration
+	ClientInfo                   ClientInfo
+	Migration                    bool
+	AllowTCPFallback             bool
+	TCPFallbackRTTThreshold      int
+	AllowUDPUnstableFallback     bool
+	TURNSEnabled                 bool
+	AllowPlayoutDelay            bool
+	DataChannelMaxBufferedAmount uint64
+	Logger                       logger.Logger
 }
 
 type TransportManager struct {
@@ -173,19 +174,20 @@ func NewTransportManager(params TransportManagerParams) (*TransportManager, erro
 	})
 
 	subscriber, err := NewPCTransport(TransportParams{
-		ParticipantID:           params.SID,
-		ParticipantIdentity:     params.Identity,
-		ProtocolVersion:         params.ProtocolVersion,
-		Config:                  params.Config,
-		DirectionConfig:         params.Config.Subscriber,
-		CongestionControlConfig: params.CongestionControlConfig,
-		Telemetry:               params.Telemetry,
-		EnabledCodecs:           subscribeCodecs,
-		Logger:                  LoggerWithPCTarget(params.Logger, livekit.SignalTarget_SUBSCRIBER),
-		ClientInfo:              params.ClientInfo,
-		IsOfferer:               true,
-		IsSendSide:              true,
-		AllowPlayoutDelay:       params.AllowPlayoutDelay,
+		ParticipantID:                params.SID,
+		ParticipantIdentity:          params.Identity,
+		ProtocolVersion:              params.ProtocolVersion,
+		Config:                       params.Config,
+		DirectionConfig:              params.Config.Subscriber,
+		CongestionControlConfig:      params.CongestionControlConfig,
+		Telemetry:                    params.Telemetry,
+		EnabledCodecs:                subscribeCodecs,
+		Logger:                       LoggerWithPCTarget(params.Logger, livekit.SignalTarget_SUBSCRIBER),
+		ClientInfo:                   params.ClientInfo,
+		IsOfferer:                    true,
+		IsSendSide:                   true,
+		AllowPlayoutDelay:            params.AllowPlayoutDelay,
+		DataChannelMaxBufferedAmount: params.DataChannelMaxBufferedAmount,
 	})
 	if err != nil {
 		return nil, err
@@ -607,7 +609,7 @@ func (t *TransportManager) handleConnectionFailed(isShortLived bool) {
 
 	lastSignalSince := time.Since(t.lastSignalAt)
 	signalValid := t.signalSourceValid.Load()
-	if lastSignalSince > iceFailedTimeout || !signalValid {
+	if !t.hasRecentSignalLocked() || !signalValid {
 		// the failed might cause by network interrupt because signal closed or we have not seen any signal in the time window,
 		// so don't switch to next candidate type
 		t.params.Logger.Infow("ignoring prefer candidate check by ICE failure because signal connection interrupted",
@@ -754,7 +756,7 @@ func (t *TransportManager) onMediaLossUpdate(loss uint8) {
 	if loss >= uint8(255*udpLossFracUnstable/100) {
 		t.udpLossUnstableCount |= 1
 		if bits.OnesCount32(t.udpLossUnstableCount) >= udpLossUnstableCountThreshold {
-			if t.udpRTT > 0 && t.signalingRTT < uint32(float32(t.udpRTT)*1.3) && int(t.signalingRTT) < t.params.TCPFallbackRTTThreshold && time.Since(t.lastSignalAt) < iceFailedTimeout {
+			if t.udpRTT > 0 && t.signalingRTT < uint32(float32(t.udpRTT)*1.3) && int(t.signalingRTT) < t.params.TCPFallbackRTTThreshold && t.hasRecentSignalLocked() {
 				t.udpLossUnstableCount = 0
 				t.lock.Unlock()
 
@@ -825,4 +827,8 @@ func (t *TransportManager) SetSubscriberAllowPause(allowPause bool) {
 
 func (t *TransportManager) SetSubscriberChannelCapacity(channelCapacity int64) {
 	t.subscriber.SetChannelCapacityOfStreamAllocator(channelCapacity)
+}
+
+func (t *TransportManager) hasRecentSignalLocked() bool {
+	return time.Since(t.lastSignalAt) < PingTimeoutSeconds*time.Second
 }

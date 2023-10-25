@@ -852,8 +852,8 @@ func (r *Room) createJoinResponseLocked(participant types.LocalParticipant, iceS
 		SubscriberPrimary:   participant.SubscriberAsPrimary(),
 		ClientConfiguration: participant.GetClientConfiguration(),
 		// sane defaults for ping interval & timeout
-		PingInterval:  10,
-		PingTimeout:   20,
+		PingInterval:  PingIntervalSeconds,
+		PingTimeout:   PingTimeoutSeconds,
 		ServerInfo:    r.serverInfo,
 		ServerVersion: r.serverInfo.Version,
 		ServerRegion:  r.serverInfo.Region,
@@ -1354,7 +1354,7 @@ func BroadcastDataPacketForRoom(r types.Room, source types.LocalParticipant, dp 
 	utils.ParallelExec(destParticipants, dataForwardLoadBalanceThreshold, 1, func(op types.LocalParticipant) {
 		err := op.SendDataPacket(dp, dpData)
 		if err != nil && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, sctp.ErrStreamClosed) &&
-			!errors.Is(err, ErrTransportFailure) {
+			!errors.Is(err, ErrTransportFailure) && !errors.Is(err, ErrDataChannelBufferFull) {
 			op.GetLogger().Infow("send data packet error", "error", err)
 		}
 	})

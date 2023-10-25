@@ -18,7 +18,10 @@ import (
 	"context"
 	"time"
 
+	"google.golang.org/protobuf/types/known/emptypb"
+
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/rpc"
 )
 
 //go:generate go run github.com/maxbrunsfeld/counterfeiter/v6 -generate
@@ -71,8 +74,15 @@ type IngressStore interface {
 	DeleteIngress(ctx context.Context, info *livekit.IngressInfo) error
 }
 
+//counterfeiter:generate . IOClient
+type IOClient interface {
+	CreateEgress(ctx context.Context, info *livekit.EgressInfo) (*emptypb.Empty, error)
+	GetEgress(ctx context.Context, req *rpc.GetEgressRequest) (*livekit.EgressInfo, error)
+	ListEgress(ctx context.Context, req *livekit.ListEgressRequest) (*livekit.ListEgressResponse, error)
+}
+
 //counterfeiter:generate . RoomAllocator
 type RoomAllocator interface {
-	CreateRoom(ctx context.Context, req *livekit.CreateRoomRequest) (*livekit.Room, error)
+	CreateRoom(ctx context.Context, req *livekit.CreateRoomRequest) (*livekit.Room, bool, error)
 	ValidateCreateRoom(ctx context.Context, roomName livekit.RoomName) error
 }
