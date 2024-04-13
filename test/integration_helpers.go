@@ -58,7 +58,7 @@ var roomClient livekit.RoomService
 func init() {
 	config.InitLoggerFromConfig(&config.DefaultConfig.Logging)
 
-	prometheus.Init("test", livekit.NodeType_SERVER, "test")
+	prometheus.Init("test", livekit.NodeType_SERVER)
 }
 
 func setupSingleNodeTest(name string) (*service.LivekitServer, func()) {
@@ -183,7 +183,6 @@ func createMultiNodeServer(nodeID string, port uint32) *service.LivekitServer {
 	conf.RTC.TCPPort = port + 2
 	conf.Redis.Address = "localhost:6379"
 	conf.Keys = map[string]string{testApiKey: testApiSecret}
-	conf.SignalRelay.Enabled = true
 
 	currentNode, err := routing.NewLocalNode(conf)
 	if err != nil {

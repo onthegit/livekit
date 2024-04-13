@@ -16,15 +16,15 @@ package service
 
 import (
 	"context"
-	"errors"
 
 	"google.golang.org/protobuf/types/known/emptypb"
 
-	"github.com/livekit/livekit-server/pkg/telemetry"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/psrpc"
+
+	"github.com/livekit/livekit-server/pkg/telemetry"
 )
 
 type IOInfoService struct {
@@ -32,27 +32,29 @@ type IOInfoService struct {
 
 	es        EgressStore
 	is        IngressStore
+	ss        SIPStore
 	telemetry telemetry.TelemetryService
 
 	shutdown chan struct{}
 }
 
 func NewIOInfoService(
-	nodeID livekit.NodeID,
 	bus psrpc.MessageBus,
 	es EgressStore,
 	is IngressStore,
+	ss SIPStore,
 	ts telemetry.TelemetryService,
 ) (*IOInfoService, error) {
 	s := &IOInfoService{
 		es:        es,
 		is:        is,
+		ss:        ss,
 		telemetry: ts,
 		shutdown:  make(chan struct{}),
 	}
 
 	if bus != nil {
-		ioServer, err := rpc.NewIOInfoServer(string(nodeID), s, bus)
+		ioServer, err := rpc.NewIOInfoServer(s, bus)
 		if err != nil {
 			return nil, err
 		}
@@ -73,6 +75,14 @@ func (s *IOInfoService) Start() error {
 	}
 
 	return nil
+}
+
+func (s *IOInfoService) Stop() {
+	close(s.shutdown)
+
+	if s.ioServer != nil {
+		s.ioServer.Shutdown()
+	}
 }
 
 func (s *IOInfoService) CreateEgress(ctx context.Context, info *livekit.EgressInfo) (*emptypb.Empty, error) {
@@ -126,7 +136,6 @@ func (s *IOInfoService) GetEgress(ctx context.Context, req *rpc.GetEgressRequest
 }
 
 func (s *IOInfoService) ListEgress(ctx context.Context, req *livekit.ListEgressRequest) (*livekit.ListEgressResponse, error) {
-	var items []*livekit.EgressInfo
 	if req.EgressId != "" {
 		info, err := s.es.LoadEgress(ctx, req.EgressId)
 		if err != nil {
@@ -134,122 +143,23 @@ func (s *IOInfoService) ListEgress(ctx context.Context, req *livekit.ListEgressR
 			return nil, err
 		}
 
-		if !req.Active || int32(info.Status) < int32(livekit.EgressStatus_EGRESS_COMPLETE) {
-			items = []*livekit.EgressInfo{info}
-		}
-	} else {
-		var err error
-		items, err = s.es.ListEgress(ctx, livekit.RoomName(req.RoomName), req.Active)
-		if err != nil {
-			logger.Errorw("failed to list egress", err)
-			return nil, err
-		}
+		return &livekit.ListEgressResponse{Items: []*livekit.EgressInfo{info}}, nil
+	}
+
+	items, err := s.es.ListEgress(ctx, livekit.RoomName(req.RoomName), req.Active)
+	if err != nil {
+		logger.Errorw("failed to list egress", err)
+		return nil, err
 	}
 
 	return &livekit.ListEgressResponse{Items: items}, nil
 }
 
-func (s *IOInfoService) GetIngressInfo(ctx context.Context, req *rpc.GetIngressInfoRequest) (*rpc.GetIngressInfoResponse, error) {
-	info, err := s.loadIngressFromInfoRequest(req)
-	if err != nil {
-		return nil, err
-	}
-
-	return &rpc.GetIngressInfoResponse{Info: info}, nil
-}
-
-func (s *IOInfoService) loadIngressFromInfoRequest(req *rpc.GetIngressInfoRequest) (info *livekit.IngressInfo, err error) {
-	if req.IngressId != "" {
-		info, err = s.is.LoadIngress(context.Background(), req.IngressId)
-	} else if req.StreamKey != "" {
-		info, err = s.is.LoadIngressFromStreamKey(context.Background(), req.StreamKey)
-	} else {
-		err = errors.New("request needs to specify either IngressId or StreamKey")
-	}
-	return info, err
-}
-
-func (s *IOInfoService) UpdateIngressState(ctx context.Context, req *rpc.UpdateIngressStateRequest) (*emptypb.Empty, error) {
-	info, err := s.is.LoadIngress(ctx, req.IngressId)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = s.is.UpdateIngressState(ctx, req.IngressId, req.State); err != nil {
-		logger.Errorw("could not update ingress", err)
-		return nil, err
-	}
-
-	if info.State.Status != req.State.Status {
-		info.State = req.State
-
-		switch req.State.Status {
-		case livekit.IngressState_ENDPOINT_ERROR,
-			livekit.IngressState_ENDPOINT_INACTIVE:
-			s.telemetry.IngressEnded(ctx, info)
-
-			if req.State.Error != "" {
-				logger.Infow("ingress failed", "error", req.State.Error, "ingressID", req.IngressId)
-			} else {
-				logger.Infow("ingress ended", "ingressID", req.IngressId)
-			}
-
-		case livekit.IngressState_ENDPOINT_PUBLISHING:
-			s.telemetry.IngressStarted(ctx, info)
-
-			logger.Infow("ingress started", "ingressID", req.IngressId)
-
-		case livekit.IngressState_ENDPOINT_BUFFERING:
-			s.telemetry.IngressUpdated(ctx, info)
-
-			logger.Infow("ingress buffering", "ingressID", req.IngressId)
-		}
-	} else {
-		// Status didn't change, send Updated event
-		info.State = req.State
-
-		s.telemetry.IngressUpdated(ctx, info)
-
-		logger.Infow("ingress updated", "ingressID", req.IngressId)
-	}
-
-	return &emptypb.Empty{}, nil
-}
-
-func (s *IOInfoService) Stop() {
-	close(s.shutdown)
-
-	if s.ioServer != nil {
-		s.ioServer.Shutdown()
-	}
-}
-
-// deprecated
-func (s *IOInfoService) UpdateEgressInfo(ctx context.Context, info *livekit.EgressInfo) (*emptypb.Empty, error) {
-	err := s.es.UpdateEgress(ctx, info)
-
-	switch info.Status {
-	case livekit.EgressStatus_EGRESS_ACTIVE:
-		s.telemetry.EgressUpdated(ctx, info)
-
-	case livekit.EgressStatus_EGRESS_COMPLETE,
-		livekit.EgressStatus_EGRESS_FAILED,
-		livekit.EgressStatus_EGRESS_ABORTED,
-		livekit.EgressStatus_EGRESS_LIMIT_REACHED:
-
-		// log results
-		if info.Error != "" {
-			logger.Errorw("egress failed", errors.New(info.Error), "egressID", info.EgressId)
-		} else {
-			logger.Infow("egress ended", "egressID", info.EgressId)
-		}
-
-		s.telemetry.EgressEnded(ctx, info)
-	}
-	if err != nil {
-		logger.Errorw("could not update egress", err)
-		return nil, err
-	}
-
+func (s *IOInfoService) UpdateMetrics(ctx context.Context, req *rpc.UpdateMetricsRequest) (*emptypb.Empty, error) {
+	logger.Infow("received egress metrics",
+		"egressID", req.Info.EgressId,
+		"avgCpu", req.AvgCpuUsage,
+		"maxCpu", req.MaxCpuUsage,
+	)
 	return &emptypb.Empty{}, nil
 }

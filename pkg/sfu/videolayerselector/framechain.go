@@ -15,7 +15,7 @@
 package videolayerselector
 
 import (
-	dd "github.com/livekit/livekit-server/pkg/sfu/dependencydescriptor"
+	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
 	"github.com/livekit/protocol/logger"
 )
 
@@ -45,11 +45,16 @@ func (fc *FrameChain) OnFrame(extFrameNum uint64, fd *dd.FrameDependencyTemplate
 		return false
 	}
 
+	if len(fd.ChainDiffs) <= fc.chainIdx {
+		fc.logger.Warnw("invalid frame chain diff", nil, "chanIdx", fc.chainIdx, "frame", extFrameNum, "fd", fd)
+		return fc.broken
+	}
+
 	// A decodable frame with frame_chain_fdiff equal to 0 indicates that the Chain is intact.
 	if fd.ChainDiffs[fc.chainIdx] == 0 {
 		if fc.broken {
 			fc.broken = false
-			fc.logger.Debugw("frame chain intact", "chanIdx", fc.chainIdx, "frame", extFrameNum)
+			// fc.logger.Debugw("frame chain intact", "chanIdx", fc.chainIdx, "frame", extFrameNum)
 		}
 		fc.expectFrames = fc.expectFrames[:0]
 		return true
@@ -81,7 +86,7 @@ func (fc *FrameChain) OnFrame(extFrameNum uint64, fd *dd.FrameDependencyTemplate
 
 	if !intact {
 		fc.broken = true
-		fc.logger.Debugw("frame chain broken", "chanIdx", fc.chainIdx, "sd", sd, "frame", extFrameNum, "prevFrame", prevFrameInChain)
+		// fc.logger.Debugw("frame chain broken", "chanIdx", fc.chainIdx, "sd", sd, "frame", extFrameNum, "prevFrame", prevFrameInChain)
 	}
 	return intact
 }
@@ -95,7 +100,7 @@ func (fc *FrameChain) OnExpectFrameChanged(frameNum uint64, decision selectorDec
 		if f == frameNum {
 			if decision != selectorDecisionForwarded {
 				fc.broken = true
-				fc.logger.Debugw("frame chain broken", "chanIdx", fc.chainIdx, "sd", decision, "frame", frameNum)
+				// fc.logger.Debugw("frame chain broken", "chanIdx", fc.chainIdx, "sd", decision, "frame", frameNum)
 			}
 			fc.expectFrames[i] = fc.expectFrames[len(fc.expectFrames)-1]
 			fc.expectFrames = fc.expectFrames[:len(fc.expectFrames)-1]

@@ -30,9 +30,11 @@ import (
 	"github.com/livekit/livekit-server/pkg/clientconfiguration"
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
+	"github.com/livekit/livekit-server/pkg/agent"
 	"github.com/livekit/livekit-server/pkg/telemetry"
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	redisLiveKit "github.com/livekit/protocol/redis"
 	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/utils"
@@ -60,22 +62,31 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 		NewIOInfoService,
 		wire.Bind(new(IOClient), new(*IOInfoService)),
 		rpc.NewEgressClient,
+		rpc.NewIngressClient,
 		getEgressStore,
 		NewEgressLauncher,
 		NewEgressService,
-		rpc.NewIngressClient,
 		getIngressStore,
 		getIngressConfig,
 		NewIngressService,
+		rpc.NewSIPClient,
+		getSIPStore,
+		getSIPConfig,
+		NewSIPService,
 		NewRoomAllocator,
 		NewRoomService,
 		NewRTCService,
+		NewAgentService,
+		agent.NewAgentClient,
 		getSignalRelayConfig,
 		NewDefaultSignalServer,
 		routing.NewSignalClient,
+		rpc.NewKeepalivePubSub,
 		getPSRPCConfig,
-		routing.NewTopicFormatter,
-		routing.NewRoomClient,
+		getPSRPCClientParams,
+		rpc.NewTopicFormatter,
+		rpc.NewTypedRoomClient,
+		rpc.NewTypedParticipantClient,
 		NewLocalRoomManager,
 		NewTURNAuthHandler,
 		getTURNAuthHandlerFunc,
@@ -92,7 +103,10 @@ func InitializeRouter(conf *config.Config, currentNode routing.LocalNode) (routi
 		getNodeID,
 		getMessageBus,
 		getSignalRelayConfig,
+		getPSRPCConfig,
+		getPSRPCClientParams,
 		routing.NewSignalClient,
+		rpc.NewKeepalivePubSub,
 		routing.CreateRouter,
 	)
 
@@ -188,6 +202,19 @@ func getIngressConfig(conf *config.Config) *config.IngressConfig {
 	return &conf.Ingress
 }
 
+func getSIPStore(s ObjectStore) SIPStore {
+	switch store := s.(type) {
+	case *RedisStore:
+		return store
+	default:
+		return nil
+	}
+}
+
+func getSIPConfig(conf *config.Config) *config.SIPConfig {
+	return &conf.SIP
+}
+
 func createClientConfiguration() clientconfiguration.ClientConfigurationManager {
 	return clientconfiguration.NewStaticClientConfigurationManager(clientconfiguration.StaticConfigurations)
 }
@@ -200,8 +227,12 @@ func getSignalRelayConfig(config *config.Config) config.SignalRelayConfig {
 	return config.SignalRelay
 }
 
-func getPSRPCConfig(config *config.Config) config.PSRPCConfig {
+func getPSRPCConfig(config *config.Config) rpc.PSRPCConfig {
 	return config.PSRPC
+}
+
+func getPSRPCClientParams(config rpc.PSRPCConfig, bus psrpc.MessageBus) rpc.ClientParams {
+	return rpc.NewClientParams(config, bus, logger.GetLogger(), rpc.PSRPCMetricsObserver{})
 }
 
 func newInProcessTurnServer(conf *config.Config, authHandler turn.AuthHandler) (*turn.Server, error) {

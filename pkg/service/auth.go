@@ -34,6 +34,11 @@ const (
 
 type grantsKey struct{}
 
+type grantsValue struct {
+	claims *auth.ClaimGrants
+	apiKey string
+}
+
 var (
 	ErrPermissionDenied          = errors.New("permissions denied")
 	ErrMissingAuthorization      = errors.New("invalid authorization header. Must start with " + bearerPrefix)
@@ -62,7 +67,7 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 
 	if authHeader != "" {
 		if !strings.HasPrefix(authHeader, bearerPrefix) {
-			handleError(w, http.StatusUnauthorized, ErrMissingAuthorization)
+			handleError(w, r, http.StatusUnauthorized, ErrMissingAuthorization)
 			return
 		}
 
@@ -75,25 +80,28 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	if authToken != "" {
 		v, err := auth.ParseAPIToken(authToken)
 		if err != nil {
-			handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
+			handleError(w, r, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
 			return
 		}
 
 		secret := m.provider.GetSecret(v.APIKey())
 		if secret == "" {
-			handleError(w, http.StatusUnauthorized, errors.New("invalid API key: "+v.APIKey()))
+			handleError(w, r, http.StatusUnauthorized, errors.New("invalid API key: "+v.APIKey()))
 			return
 		}
 
 		grants, err := v.Verify(secret)
 		if err != nil {
-			handleError(w, http.StatusUnauthorized, errors.New("invalid token: "+authToken+", error: "+err.Error()))
+			handleError(w, r, http.StatusUnauthorized, errors.New("invalid token: "+authToken+", error: "+err.Error()))
 			return
 		}
 
 		// set grants in context
 		ctx := r.Context()
-		r = r.WithContext(context.WithValue(ctx, grantsKey{}, grants))
+		r = r.WithContext(context.WithValue(ctx, grantsKey{}, &grantsValue{
+			claims: grants,
+			apiKey: v.APIKey(),
+		}))
 	}
 
 	next.ServeHTTP(w, r)
@@ -101,15 +109,27 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 
 func GetGrants(ctx context.Context) *auth.ClaimGrants {
 	val := ctx.Value(grantsKey{})
-	claims, ok := val.(*auth.ClaimGrants)
+	v, ok := val.(*grantsValue)
 	if !ok {
 		return nil
 	}
-	return claims
+	return v.claims
 }
 
-func WithGrants(ctx context.Context, grants *auth.ClaimGrants) context.Context {
-	return context.WithValue(ctx, grantsKey{}, grants)
+func GetAPIKey(ctx context.Context) string {
+	val := ctx.Value(grantsKey{})
+	v, ok := val.(*grantsValue)
+	if !ok {
+		return ""
+	}
+	return v.apiKey
+}
+
+func WithGrants(ctx context.Context, grants *auth.ClaimGrants, apiKey string) context.Context {
+	return context.WithValue(ctx, grantsKey{}, &grantsValue{
+		claims: grants,
+		apiKey: apiKey,
+	})
 }
 
 func SetAuthorizationToken(r *http.Request, token string) {

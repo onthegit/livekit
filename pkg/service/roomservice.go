@@ -16,57 +16,61 @@ package service
 
 import (
 	"context"
-	"fmt"
 	"strconv"
-	"time"
 
+	"github.com/avast/retry-go/v4"
 	"github.com/pkg/errors"
-	"github.com/thoas/go-funk"
 	"github.com/twitchtv/twirp"
-	"google.golang.org/protobuf/proto"
 
+	"github.com/livekit/livekit-server/pkg/agent"
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/pkg/rtc"
 	"github.com/livekit/protocol/livekit"
-	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
+	"github.com/livekit/psrpc"
 )
 
 // A rooms service that supports a single node
 type RoomService struct {
-	roomConf       config.RoomConfig
-	apiConf        config.APIConfig
-	psrpcConf      config.PSRPCConfig
-	router         routing.MessageRouter
-	roomAllocator  RoomAllocator
-	roomStore      ServiceStore
-	egressLauncher rtc.EgressLauncher
-	topicFormatter rpc.TopicFormatter
-	roomClient     rpc.TypedRoomClient
+	roomConf          config.RoomConfig
+	apiConf           config.APIConfig
+	psrpcConf         rpc.PSRPCConfig
+	router            routing.MessageRouter
+	roomAllocator     RoomAllocator
+	roomStore         ServiceStore
+	agentClient       agent.Client
+	egressLauncher    rtc.EgressLauncher
+	topicFormatter    rpc.TopicFormatter
+	roomClient        rpc.TypedRoomClient
+	participantClient rpc.TypedParticipantClient
 }
 
 func NewRoomService(
 	roomConf config.RoomConfig,
 	apiConf config.APIConfig,
-	psrpcConf config.PSRPCConfig,
+	psrpcConf rpc.PSRPCConfig,
 	router routing.MessageRouter,
 	roomAllocator RoomAllocator,
 	serviceStore ServiceStore,
+	agentClient agent.Client,
 	egressLauncher rtc.EgressLauncher,
 	topicFormatter rpc.TopicFormatter,
 	roomClient rpc.TypedRoomClient,
+	participantClient rpc.TypedParticipantClient,
 ) (svc *RoomService, err error) {
 	svc = &RoomService{
-		roomConf:       roomConf,
-		apiConf:        apiConf,
-		psrpcConf:      psrpcConf,
-		router:         router,
-		roomAllocator:  roomAllocator,
-		roomStore:      serviceStore,
-		egressLauncher: egressLauncher,
-		topicFormatter: topicFormatter,
-		roomClient:     roomClient,
+		roomConf:          roomConf,
+		apiConf:           apiConf,
+		psrpcConf:         psrpcConf,
+		router:            router,
+		roomAllocator:     roomAllocator,
+		roomStore:         serviceStore,
+		agentClient:       agentClient,
+		egressLauncher:    egressLauncher,
+		topicFormatter:    topicFormatter,
+		roomClient:        roomClient,
+		participantClient: participantClient,
 	}
 	return
 }
@@ -86,40 +90,36 @@ func (s *RoomService) CreateRoom(ctx context.Context, req *livekit.CreateRoomReq
 	}
 
 	// actually start the room on an RTC node, to ensure metadata & empty timeout functionality
-	_, sink, source, err := s.router.StartParticipantSignal(ctx,
+	res, err := s.router.StartParticipantSignal(ctx,
 		livekit.RoomName(req.Name),
 		routing.ParticipantInit{},
 	)
 	if err != nil {
 		return nil, err
 	}
-	defer sink.Close()
-	defer source.Close()
+	defer res.RequestSink.Close()
+	defer res.ResponseSource.Close()
 
-	// ensure it's created correctly
-	err = s.confirmExecution(func() error {
-		_, _, err := s.roomStore.LoadRoom(ctx, livekit.RoomName(req.Name), false)
-		if err != nil {
-			return ErrOperationFailed
-		} else {
-			return nil
+	if created {
+		go s.agentClient.LaunchJob(ctx, &agent.JobDescription{
+			JobType: livekit.JobType_JT_ROOM,
+			Room:    rm,
+		})
+
+		if req.Egress != nil && req.Egress.Room != nil {
+			_, err = s.egressLauncher.StartEgress(ctx, &rpc.StartEgressRequest{
+				Request: &rpc.StartEgressRequest_RoomComposite{
+					RoomComposite: req.Egress.Room,
+				},
+				RoomId: rm.Sid,
+			})
+			if err != nil {
+				return nil, err
+			}
 		}
-	})
-	if err != nil {
-		return nil, err
 	}
 
-	if created && req.Egress != nil && req.Egress.Room != nil {
-		egress := &rpc.StartEgressRequest{
-			Request: &rpc.StartEgressRequest_RoomComposite{
-				RoomComposite: req.Egress.Room,
-			},
-			RoomId: rm.Sid,
-		}
-		_, err = s.egressLauncher.StartEgress(ctx, egress)
-	}
-
-	return rm, err
+	return rm, nil
 }
 
 func (s *RoomService) ListRooms(ctx context.Context, req *livekit.ListRoomsRequest) (*livekit.ListRoomsResponse, error) {
@@ -151,39 +151,13 @@ func (s *RoomService) DeleteRoom(ctx context.Context, req *livekit.DeleteRoomReq
 		return nil, twirpAuthError(err)
 	}
 
-	if s.psrpcConf.Enabled {
-		return s.roomClient.DeleteRoom(ctx, s.topicFormatter.RoomTopic(ctx, livekit.RoomName(req.Room)), req)
+	_, err := s.roomClient.DeleteRoom(ctx, s.topicFormatter.RoomTopic(ctx, livekit.RoomName(req.Room)), req)
+	if !errors.Is(err, psrpc.ErrNoResponse) {
+		return &livekit.DeleteRoomResponse{}, err
 	}
 
-	if _, _, err := s.roomStore.LoadRoom(ctx, livekit.RoomName(req.Room), false); err == ErrRoomNotFound {
-		return nil, twirp.NotFoundError("room not found")
-	}
-
-	err := s.router.WriteRoomRTC(ctx, livekit.RoomName(req.Room), &livekit.RTCNodeMessage{
-		Message: &livekit.RTCNodeMessage_DeleteRoom{
-			DeleteRoom: req,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	// we should not return until when the room is confirmed deleted
-	err = s.confirmExecution(func() error {
-		_, _, err := s.roomStore.LoadRoom(ctx, livekit.RoomName(req.Room), false)
-		if err == nil {
-			return ErrOperationFailed
-		} else if err != ErrRoomNotFound {
-			return err
-		} else {
-			return nil
-		}
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &livekit.DeleteRoomResponse{}, nil
+	err = s.roomStore.DeleteRoom(ctx, livekit.RoomName(req.Room))
+	return &livekit.DeleteRoomResponse{}, err
 }
 
 func (s *RoomService) ListParticipants(ctx context.Context, req *livekit.ListParticipantsRequest) (*livekit.ListParticipantsResponse, error) {
@@ -228,34 +202,7 @@ func (s *RoomService) RemoveParticipant(ctx context.Context, req *livekit.RoomPa
 		return nil, twirp.NotFoundError("participant not found")
 	}
 
-	if s.psrpcConf.Enabled {
-		return s.roomClient.RemoveParticipant(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
-	}
-
-	err := s.writeParticipantMessage(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity), &livekit.RTCNodeMessage{
-		Message: &livekit.RTCNodeMessage_RemoveParticipant{
-			RemoveParticipant: req,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	err = s.confirmExecution(func() error {
-		_, err := s.roomStore.LoadParticipant(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity))
-		if err == ErrParticipantNotFound {
-			return nil
-		} else if err != nil {
-			return err
-		} else {
-			return ErrOperationFailed
-		}
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &livekit.RemoveParticipantResponse{}, nil
+	return s.participantClient.RemoveParticipant(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
 }
 
 func (s *RoomService) MutePublishedTrack(ctx context.Context, req *livekit.MuteRoomTrackRequest) (*livekit.MuteRoomTrackResponse, error) {
@@ -264,47 +211,7 @@ func (s *RoomService) MutePublishedTrack(ctx context.Context, req *livekit.MuteR
 		return nil, twirpAuthError(err)
 	}
 
-	if s.psrpcConf.Enabled {
-		return s.roomClient.MutePublishedTrack(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
-	}
-
-	err := s.writeParticipantMessage(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity), &livekit.RTCNodeMessage{
-		Message: &livekit.RTCNodeMessage_MuteTrack{
-			MuteTrack: req,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var track *livekit.TrackInfo
-	err = s.confirmExecution(func() error {
-		p, err := s.roomStore.LoadParticipant(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity))
-		if err != nil {
-			return err
-		}
-		// ensure track is muted
-		t := funk.Find(p.Tracks, func(t *livekit.TrackInfo) bool {
-			return t.Sid == req.TrackSid
-		})
-		var ok bool
-		track, ok = t.(*livekit.TrackInfo)
-		if !ok {
-			return ErrTrackNotFound
-		}
-		if track.Muted != req.Muted {
-			return ErrOperationFailed
-		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	res := &livekit.MuteRoomTrackResponse{
-		Track: track,
-	}
-	return res, nil
+	return s.participantClient.MutePublishedTrack(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
 }
 
 func (s *RoomService) UpdateParticipant(ctx context.Context, req *livekit.UpdateParticipantRequest) (*livekit.ParticipantInfo, error) {
@@ -318,42 +225,7 @@ func (s *RoomService) UpdateParticipant(ctx context.Context, req *livekit.Update
 		return nil, twirpAuthError(err)
 	}
 
-	if s.psrpcConf.Enabled {
-		return s.roomClient.UpdateParticipant(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
-	}
-
-	err := s.writeParticipantMessage(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity), &livekit.RTCNodeMessage{
-		Message: &livekit.RTCNodeMessage_UpdateParticipant{
-			UpdateParticipant: req,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	var participant *livekit.ParticipantInfo
-	var detailedError error
-	err = s.confirmExecution(func() error {
-		participant, err = s.roomStore.LoadParticipant(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity))
-		if err != nil {
-			return err
-		}
-		if req.Metadata != "" && participant.Metadata != req.Metadata {
-			detailedError = fmt.Errorf("metadata does not match")
-			return ErrOperationFailed
-		}
-		if req.Permission != nil && !proto.Equal(req.Permission, participant.Permission) {
-			detailedError = fmt.Errorf("permissions do not match, expected: %v, actual: %v", req.Permission, participant.Permission)
-			return ErrOperationFailed
-		}
-		return nil
-	})
-	if err != nil {
-		logger.Warnw("could not confirm participant update", detailedError)
-		return nil, err
-	}
-
-	return participant, nil
+	return s.participantClient.UpdateParticipant(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
 }
 
 func (s *RoomService) UpdateSubscriptions(ctx context.Context, req *livekit.UpdateSubscriptionsRequest) (*livekit.UpdateSubscriptionsResponse, error) {
@@ -367,20 +239,7 @@ func (s *RoomService) UpdateSubscriptions(ctx context.Context, req *livekit.Upda
 		return nil, twirpAuthError(err)
 	}
 
-	if s.psrpcConf.Enabled {
-		return s.roomClient.UpdateSubscriptions(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
-	}
-
-	err := s.writeParticipantMessage(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity), &livekit.RTCNodeMessage{
-		Message: &livekit.RTCNodeMessage_UpdateSubscriptions{
-			UpdateSubscriptions: req,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &livekit.UpdateSubscriptionsResponse{}, nil
+	return s.participantClient.UpdateSubscriptions(ctx, s.topicFormatter.ParticipantTopic(ctx, livekit.RoomName(req.Room), livekit.ParticipantIdentity(req.Identity)), req)
 }
 
 func (s *RoomService) SendData(ctx context.Context, req *livekit.SendDataRequest) (*livekit.SendDataResponse, error) {
@@ -390,20 +249,7 @@ func (s *RoomService) SendData(ctx context.Context, req *livekit.SendDataRequest
 		return nil, twirpAuthError(err)
 	}
 
-	if s.psrpcConf.Enabled {
-		return s.roomClient.SendData(ctx, s.topicFormatter.RoomTopic(ctx, livekit.RoomName(req.Room)), req)
-	}
-
-	err := s.router.WriteRoomRTC(ctx, roomName, &livekit.RTCNodeMessage{
-		Message: &livekit.RTCNodeMessage_SendData{
-			SendData: req,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return &livekit.SendDataResponse{}, nil
+	return s.roomClient.SendData(ctx, s.topicFormatter.RoomTopic(ctx, livekit.RoomName(req.Room)), req)
 }
 
 func (s *RoomService) UpdateRoomMetadata(ctx context.Context, req *livekit.UpdateRoomMetadataRequest) (*livekit.Room, error) {
@@ -424,7 +270,7 @@ func (s *RoomService) UpdateRoomMetadata(ctx context.Context, req *livekit.Updat
 
 	// no one has joined the room, would not have been created on an RTC node.
 	// in this case, we'd want to run create again
-	_, _, err = s.roomAllocator.CreateRoom(ctx, &livekit.CreateRoomRequest{
+	room, created, err := s.roomAllocator.CreateRoom(ctx, &livekit.CreateRoomRequest{
 		Name:     req.Room,
 		Metadata: req.Metadata,
 	})
@@ -432,23 +278,12 @@ func (s *RoomService) UpdateRoomMetadata(ctx context.Context, req *livekit.Updat
 		return nil, err
 	}
 
-	if s.psrpcConf.Enabled {
-		_, err := s.roomClient.UpdateRoomMetadata(ctx, s.topicFormatter.RoomTopic(ctx, livekit.RoomName(req.Room)), req)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		err = s.router.WriteRoomRTC(ctx, livekit.RoomName(req.Room), &livekit.RTCNodeMessage{
-			Message: &livekit.RTCNodeMessage_UpdateRoomMetadata{
-				UpdateRoomMetadata: req,
-			},
-		})
-		if err != nil {
-			return nil, err
-		}
+	_, err = s.roomClient.UpdateRoomMetadata(ctx, s.topicFormatter.RoomTopic(ctx, livekit.RoomName(req.Room)), req)
+	if err != nil {
+		return nil, err
 	}
 
-	err = s.confirmExecution(func() error {
+	err = s.confirmExecution(ctx, func() error {
 		room, _, err = s.roomStore.LoadRoom(ctx, livekit.RoomName(req.Room), false)
 		if err != nil {
 			return err
@@ -462,30 +297,24 @@ func (s *RoomService) UpdateRoomMetadata(ctx context.Context, req *livekit.Updat
 		return nil, err
 	}
 
+	if created {
+		go s.agentClient.LaunchJob(ctx, &agent.JobDescription{
+			JobType: livekit.JobType_JT_ROOM,
+			Room:    room,
+		})
+	}
+
 	return room, nil
 }
 
-func (s *RoomService) writeParticipantMessage(ctx context.Context, room livekit.RoomName, identity livekit.ParticipantIdentity, msg *livekit.RTCNodeMessage) error {
-	if err := EnsureAdminPermission(ctx, room); err != nil {
-		return twirpAuthError(err)
-	}
-
-	return s.router.WriteParticipantRTC(ctx, room, identity, msg)
-}
-
-func (s *RoomService) confirmExecution(f func() error) error {
-	expired := time.After(s.apiConf.ExecutionTimeout)
-	var err error
-	for {
-		select {
-		case <-expired:
-			return err
-		default:
-			err = f()
-			if err == nil {
-				return nil
-			}
-			time.Sleep(s.apiConf.CheckInterval)
-		}
-	}
+func (s *RoomService) confirmExecution(ctx context.Context, f func() error) error {
+	ctx, cancel := context.WithTimeout(ctx, s.apiConf.ExecutionTimeout)
+	defer cancel()
+	return retry.Do(
+		f,
+		retry.Context(ctx),
+		retry.Delay(s.apiConf.CheckInterval),
+		retry.MaxDelay(s.apiConf.MaxCheckInterval),
+		retry.DelayType(retry.BackOffDelay),
+	)
 }

@@ -25,6 +25,7 @@ import (
 	"go.uber.org/atomic"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/livekit/livekit-server/pkg/sfu/buffer"
 	"github.com/livekit/livekit-server/pkg/telemetry/telemetryfakes"
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
@@ -284,7 +285,7 @@ func TestMuteSetting(t *testing.T) {
 			Muted: true,
 		})
 
-		_, ti := p.getPendingTrack("cid", livekit.TrackType_AUDIO)
+		_, ti, _ := p.getPendingTrack("cid", livekit.TrackType_AUDIO)
 		require.NotNil(t, ti)
 		require.True(t, ti.Muted)
 	})
@@ -466,6 +467,71 @@ func TestDisableCodecs(t *testing.T) {
 	require.False(t, found264)
 }
 
+func TestDisablePublishCodec(t *testing.T) {
+	participant := newParticipantForTestWithOpts("123", &participantOpts{
+		publisher: true,
+		clientConf: &livekit.ClientConfiguration{
+			DisabledCodecs: &livekit.DisabledCodecs{
+				Publish: []*livekit.Codec{
+					{Mime: "video/h264"},
+				},
+			},
+		},
+	})
+
+	for _, codec := range participant.enabledPublishCodecs {
+		require.NotEqual(t, strings.ToLower(codec.Mime), "video/h264")
+	}
+
+	sink := &routingfakes.FakeMessageSink{}
+	participant.SetResponseSink(sink)
+	var publishReceived atomic.Bool
+	sink.WriteMessageCalls(func(msg proto.Message) error {
+		if res, ok := msg.(*livekit.SignalResponse); ok {
+			if published := res.GetTrackPublished(); published != nil {
+				publishReceived.Store(true)
+				require.NotEmpty(t, published.Track.Codecs)
+				require.Equal(t, "video/vp8", strings.ToLower(published.Track.Codecs[0].MimeType))
+			}
+		}
+		return nil
+	})
+
+	// simulcast codec response should pick an alternative
+	participant.AddTrack(&livekit.AddTrackRequest{
+		Cid:  "cid1",
+		Type: livekit.TrackType_VIDEO,
+		SimulcastCodecs: []*livekit.SimulcastCodec{{
+			Codec: "h264",
+			Cid:   "cid1",
+		}},
+	})
+
+	require.Eventually(t, func() bool { return publishReceived.Load() }, 5*time.Second, 10*time.Millisecond)
+
+	// publishing a supported codec should not change
+	publishReceived.Store(false)
+	sink.WriteMessageCalls(func(msg proto.Message) error {
+		if res, ok := msg.(*livekit.SignalResponse); ok {
+			if published := res.GetTrackPublished(); published != nil {
+				publishReceived.Store(true)
+				require.NotEmpty(t, published.Track.Codecs)
+				require.Equal(t, "video/vp8", strings.ToLower(published.Track.Codecs[0].MimeType))
+			}
+		}
+		return nil
+	})
+	participant.AddTrack(&livekit.AddTrackRequest{
+		Cid:  "cid2",
+		Type: livekit.TrackType_VIDEO,
+		SimulcastCodecs: []*livekit.SimulcastCodec{{
+			Codec: "vp8",
+			Cid:   "cid2",
+		}},
+	})
+	require.Eventually(t, func() bool { return publishReceived.Load() }, 5*time.Second, 10*time.Millisecond)
+}
+
 func TestPreferVideoCodecForPublisher(t *testing.T) {
 	participant := newParticipantForTestWithOpts("123", &participantOpts{
 		publisher: true,
@@ -641,7 +707,6 @@ func TestPreferAudioCodecForRed(t *testing.T) {
 			require.Equalf(t, !disableRed, redPreferred, "offer : \n%s\nanswer sdp: \n%s", sdp, answer.SDP)
 		})
 	}
-
 }
 
 type participantOpts struct {
@@ -666,6 +731,8 @@ func newParticipantForTestWithOpts(identity livekit.ParticipantIdentity, opts *p
 	if err != nil {
 		panic(err)
 	}
+	ff := buffer.NewFactoryOfBufferFactory(500, 200)
+	rtcConf.SetBufferFactory(ff.CreateBufferFactory())
 	grants := &auth.ClaimGrants{
 		Video: &auth.VideoGrant{},
 	}
@@ -684,19 +751,21 @@ func newParticipantForTestWithOpts(identity livekit.ParticipantIdentity, opts *p
 	}
 	sid := livekit.ParticipantID(utils.NewGuid(utils.ParticipantPrefix))
 	p, _ := NewParticipant(ParticipantParams{
-		SID:               sid,
-		Identity:          identity,
-		Config:            rtcConf,
-		Sink:              &routingfakes.FakeMessageSink{},
-		ProtocolVersion:   opts.protocolVersion,
-		PLIThrottleConfig: conf.RTC.PLIThrottle,
-		Grants:            grants,
-		EnabledCodecs:     enabledCodecs,
-		ClientConf:        opts.clientConf,
-		ClientInfo:        ClientInfo{ClientInfo: opts.clientInfo},
-		Logger:            LoggerWithParticipant(logger.GetLogger(), identity, sid, false),
-		Telemetry:         &telemetryfakes.FakeTelemetryService{},
-		VersionGenerator:  utils.NewDefaultTimedVersionGenerator(),
+		SID:                    sid,
+		Identity:               identity,
+		Config:                 rtcConf,
+		Sink:                   &routingfakes.FakeMessageSink{},
+		ProtocolVersion:        opts.protocolVersion,
+		SessionStartTime:       time.Now(),
+		PLIThrottleConfig:      conf.RTC.PLIThrottle,
+		Grants:                 grants,
+		PublishEnabledCodecs:   enabledCodecs,
+		SubscribeEnabledCodecs: enabledCodecs,
+		ClientConf:             opts.clientConf,
+		ClientInfo:             ClientInfo{ClientInfo: opts.clientInfo},
+		Logger:                 LoggerWithParticipant(logger.GetLogger(), identity, sid, false),
+		Telemetry:              &telemetryfakes.FakeTelemetryService{},
+		VersionGenerator:       utils.NewDefaultTimedVersionGenerator(),
 	})
 	p.isPublisher.Store(opts.publisher)
 	p.updateState(livekit.ParticipantInfo_ACTIVE)

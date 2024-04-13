@@ -21,7 +21,7 @@ import (
 )
 
 func TestWrapAroundUint16(t *testing.T) {
-	w := NewWrapAround[uint16, uint32]()
+	w := NewWrapAround[uint16, uint32](WrapAroundParams{IsRestartAllowed: true})
 	testCases := []struct {
 		name            string
 		input           uint16
@@ -67,8 +67,8 @@ func TestWrapAroundUint16(t *testing.T) {
 			input: (1 << 16) - 6,
 			updated: WrapAroundUpdateResult[uint32]{
 				IsRestart:          true,
-				PreExtendedStart:   8,
-				PreExtendedHighest: 10,
+				PreExtendedStart:   (1 << 16) + 8,
+				PreExtendedHighest: (1 << 16) + 10,
 				ExtendedVal:        (1 << 16) - 6,
 			},
 			start:           (1 << 16) - 6,
@@ -194,8 +194,143 @@ func TestWrapAroundUint16(t *testing.T) {
 	}
 }
 
+func TestWrapAroundUint16NoRestart(t *testing.T) {
+	w := NewWrapAround[uint16, uint32](WrapAroundParams{IsRestartAllowed: false})
+	testCases := []struct {
+		name            string
+		input           uint16
+		updated         WrapAroundUpdateResult[uint32]
+		start           uint16
+		extendedStart   uint32
+		highest         uint16
+		extendedHighest uint32
+	}{
+		// initialize
+		{
+			name:  "initialize",
+			input: 10,
+			updated: WrapAroundUpdateResult[uint32]{
+				IsRestart:          false,
+				PreExtendedStart:   0,
+				PreExtendedHighest: 9,
+				ExtendedVal:        10,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         10,
+			extendedHighest: 10,
+		},
+		// an older number without wrap around should not reset start point
+		{
+			name:  "no reset start no wrap around",
+			input: 8,
+			updated: WrapAroundUpdateResult[uint32]{
+				IsUnhandled: true,
+				// the following fields are not valid when `IsUnhandled = true`, but code fills it in
+				// and they are filled in here for testing purposes
+				PreExtendedHighest: 10,
+				ExtendedVal:        8,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         10,
+			extendedHighest: 10,
+		},
+		// an older number with wrap around should not reset start point
+		{
+			name:  "no reset start wrap around",
+			input: (1 << 16) - 6,
+			updated: WrapAroundUpdateResult[uint32]{
+				IsUnhandled:        true,
+				PreExtendedHighest: 10,
+				ExtendedVal:        (1 << 16) - 6,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         10,
+			extendedHighest: 10,
+		},
+		// yet another older number with wrap around should not reset start point
+		{
+			name:  "no reset start again",
+			input: (1 << 16) - 12,
+			updated: WrapAroundUpdateResult[uint32]{
+				IsUnhandled:        true,
+				PreExtendedHighest: 10,
+				ExtendedVal:        (1 << 16) - 12,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         10,
+			extendedHighest: 10,
+		},
+		// duplicate should return same as highest
+		{
+			name:  "duplicate",
+			input: 10,
+			updated: WrapAroundUpdateResult[uint32]{
+				PreExtendedHighest: 10,
+				ExtendedVal:        10,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         10,
+			extendedHighest: 10,
+		},
+		// a significant jump in order should move highest to that
+		{
+			name:  "big in-order jump",
+			input: (1 << 15) - 10,
+			updated: WrapAroundUpdateResult[uint32]{
+				PreExtendedHighest: 10,
+				ExtendedVal:        (1 << 15) - 10,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         (1 << 15) - 10,
+			extendedHighest: (1 << 15) - 10,
+		},
+		// in-order, should update highest
+		{
+			name:  "in-order",
+			input: (1 << 15) + 13,
+			updated: WrapAroundUpdateResult[uint32]{
+				PreExtendedHighest: (1 << 15) - 10,
+				ExtendedVal:        (1 << 15) + 13,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         (1 << 15) + 13,
+			extendedHighest: (1 << 15) + 13,
+		},
+		// now out-of-order should not reset start as half the range has been seen
+		{
+			name:  "out-of-order after half range",
+			input: (1 << 15) - 11,
+			updated: WrapAroundUpdateResult[uint32]{
+				PreExtendedHighest: (1 << 15) + 13,
+				ExtendedVal:        (1 << 15) - 11,
+			},
+			start:           10,
+			extendedStart:   10,
+			highest:         (1 << 15) + 13,
+			extendedHighest: (1 << 15) + 13,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.updated, w.Update(tc.input))
+			require.Equal(t, tc.start, w.GetStart())
+			require.Equal(t, tc.extendedStart, w.GetExtendedStart())
+			require.Equal(t, tc.highest, w.GetHighest())
+			require.Equal(t, tc.extendedHighest, w.GetExtendedHighest())
+		})
+	}
+}
+
 func TestWrapAroundUint16RollbackRestartAndResetHighest(t *testing.T) {
-	w := NewWrapAround[uint16, uint64]()
+	w := NewWrapAround[uint16, uint64](WrapAroundParams{IsRestartAllowed: true})
 
 	// initialize
 	w.Update(23)
@@ -236,8 +371,8 @@ func TestWrapAroundUint16RollbackRestartAndResetHighest(t *testing.T) {
 	res = w.Update(65533)
 	expectedResult = WrapAroundUpdateResult[uint64]{
 		IsRestart:          true,
-		PreExtendedStart:   23,
-		PreExtendedHighest: 25,
+		PreExtendedStart:   (1 << 16) + 23,
+		PreExtendedHighest: (1 << 16) + 25,
 		ExtendedVal:        65533,
 	}
 	require.Equal(t, expectedResult, res)
@@ -267,8 +402,54 @@ func TestWrapAroundUint16RollbackRestartAndResetHighest(t *testing.T) {
 	require.Equal(t, uint64(0x7f1234), w.GetExtendedHighest())
 }
 
+func TestWrapAroundUint16WrapAroundRestartDuplicate(t *testing.T) {
+	w := NewWrapAround[uint16, uint64](WrapAroundParams{IsRestartAllowed: true})
+
+	// initialize
+	w.Update(65534)
+	require.Equal(t, uint16(65534), w.GetStart())
+	require.Equal(t, uint64(65534), w.GetExtendedStart())
+	require.Equal(t, uint16(65534), w.GetHighest())
+	require.Equal(t, uint64(65534), w.GetExtendedHighest())
+
+	// an in-order update with a roll over
+	w.Update(32)
+	require.Equal(t, uint16(65534), w.GetStart())
+	require.Equal(t, uint64(65534), w.GetExtendedStart())
+	require.Equal(t, uint16(32), w.GetHighest())
+	require.Equal(t, uint64(65568), w.GetExtendedHighest())
+
+	// duplicate of start
+	res := w.Update(65534)
+	expectedResult := WrapAroundUpdateResult[uint64]{
+		IsRestart:          false,
+		PreExtendedStart:   0,
+		PreExtendedHighest: 65568,
+		ExtendedVal:        65534,
+	}
+	require.Equal(t, expectedResult, res)
+	require.Equal(t, uint16(65534), w.GetStart())
+	require.Equal(t, uint64(65534), w.GetExtendedStart())
+	require.Equal(t, uint16(32), w.GetHighest())
+	require.Equal(t, uint64(65568), w.GetExtendedHighest())
+
+	// duplicate of start - again
+	res = w.Update(65534)
+	expectedResult = WrapAroundUpdateResult[uint64]{
+		IsRestart:          false,
+		PreExtendedStart:   0,
+		PreExtendedHighest: 65568,
+		ExtendedVal:        65534,
+	}
+	require.Equal(t, expectedResult, res)
+	require.Equal(t, uint16(65534), w.GetStart())
+	require.Equal(t, uint64(65534), w.GetExtendedStart())
+	require.Equal(t, uint16(32), w.GetHighest())
+	require.Equal(t, uint64(65568), w.GetExtendedHighest())
+}
+
 func TestWrapAroundUint32(t *testing.T) {
-	w := NewWrapAround[uint32, uint64]()
+	w := NewWrapAround[uint32, uint64](WrapAroundParams{IsRestartAllowed: true})
 	testCases := []struct {
 		name            string
 		input           uint32
@@ -314,8 +495,8 @@ func TestWrapAroundUint32(t *testing.T) {
 			input: (1 << 32) - 6,
 			updated: WrapAroundUpdateResult[uint64]{
 				IsRestart:          true,
-				PreExtendedStart:   8,
-				PreExtendedHighest: 10,
+				PreExtendedStart:   (1 << 32) + 8,
+				PreExtendedHighest: (1 << 32) + 10,
 				ExtendedVal:        (1 << 32) - 6,
 			},
 			start:           (1 << 32) - 6,

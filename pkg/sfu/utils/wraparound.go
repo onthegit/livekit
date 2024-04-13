@@ -26,7 +26,12 @@ type extendedNumber interface {
 	uint32 | uint64
 }
 
+type WrapAroundParams struct {
+	IsRestartAllowed bool
+}
+
 type WrapAround[T number, ET extendedNumber] struct {
+	params    WrapAroundParams
 	fullRange ET
 
 	initialized     bool
@@ -36,9 +41,10 @@ type WrapAround[T number, ET extendedNumber] struct {
 	extendedHighest ET
 }
 
-func NewWrapAround[T number, ET extendedNumber]() *WrapAround[T, ET] {
+func NewWrapAround[T number, ET extendedNumber](params WrapAroundParams) *WrapAround[T, ET] {
 	var t T
 	return &WrapAround[T, ET]{
+		params:    params,
 		fullRange: 1 << (unsafe.Sizeof(t) * 8),
 	}
 }
@@ -52,6 +58,7 @@ func (w *WrapAround[T, ET]) Seed(from *WrapAround[T, ET]) {
 }
 
 type WrapAroundUpdateResult[ET extendedNumber] struct {
+	IsUnhandled        bool // when set, other fields are invalid
 	IsRestart          bool
 	PreExtendedStart   ET // valid only if IsRestart = true
 	PreExtendedHighest ET
@@ -70,16 +77,15 @@ func (w *WrapAround[T, ET]) Update(val T) (result WrapAroundUpdateResult[ET]) {
 		return
 	}
 
-	result.PreExtendedHighest = w.extendedHighest
-
 	gap := val - w.highest
 	if gap > T(w.fullRange>>1) {
 		// out-of-order
-		result.IsRestart, result.PreExtendedStart, result.ExtendedVal = w.maybeAdjustStart(val)
-		return
+		return w.maybeAdjustStart(val)
 	}
 
 	// in-order
+	result.PreExtendedHighest = w.extendedHighest
+
 	if val < w.highest {
 		w.cycles += w.fullRange
 	}
@@ -124,7 +130,7 @@ func (w *WrapAround[T, ET]) updateExtendedHighest() {
 	w.extendedHighest = getExtendedHighest(w.cycles, w.highest)
 }
 
-func (w *WrapAround[T, ET]) maybeAdjustStart(val T) (isRestart bool, preExtendedStart ET, extendedVal ET) {
+func (w *WrapAround[T, ET]) maybeAdjustStart(val T) (result WrapAroundUpdateResult[ET]) {
 	// re-adjust start if necessary. The conditions are
 	// 1. Not seen more than half the range yet
 	// 1. wrap back compared to start and not completed a half cycle, sequences like (10, 65530) in uint16 space
@@ -135,27 +141,37 @@ func (w *WrapAround[T, ET]) maybeAdjustStart(val T) (isRestart bool, preExtended
 		if w.isWrapBack(val, w.highest) {
 			cycles -= w.fullRange
 		}
-		extendedVal = getExtendedHighest(cycles, val)
+		result.PreExtendedHighest = w.extendedHighest
+		result.ExtendedVal = getExtendedHighest(cycles, val)
 		return
 	}
 
 	if val-w.start > T(w.fullRange>>1) {
-		// out-of-order with existing start => a new start
-		isRestart = true
-		preExtendedStart = w.GetExtendedStart()
+		if w.params.IsRestartAllowed {
+			// out-of-order with existing start => a new start
+			result.IsRestart = true
+			if val > w.start {
+				result.PreExtendedStart = w.fullRange + ET(w.start)
+			} else {
+				result.PreExtendedStart = ET(w.start)
+			}
 
-		if w.isWrapBack(val, w.highest) {
-			w.cycles = w.fullRange
-			w.updateExtendedHighest()
-			cycles = 0
+			if w.isWrapBack(val, w.highest) {
+				w.cycles = w.fullRange
+				w.updateExtendedHighest()
+				cycles = 0
+			}
+			w.start = val
+		} else {
+			result.IsUnhandled = true
 		}
-		w.start = val
 	} else {
 		if w.isWrapBack(val, w.highest) {
 			cycles -= w.fullRange
 		}
 	}
-	extendedVal = getExtendedHighest(cycles, val)
+	result.PreExtendedHighest = w.extendedHighest
+	result.ExtendedVal = getExtendedHighest(cycles, val)
 	return
 }
 

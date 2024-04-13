@@ -23,42 +23,22 @@ import (
 
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/rpc"
 	"github.com/livekit/protocol/rpc/rpcfakes"
 
 	"github.com/livekit/livekit-server/pkg/config"
-	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/pkg/routing/routingfakes"
 	"github.com/livekit/livekit-server/pkg/service"
 	"github.com/livekit/livekit-server/pkg/service/servicefakes"
 )
 
 func TestDeleteRoom(t *testing.T) {
-	t.Run("delete non-existent", func(t *testing.T) {
-		svc := newTestRoomService(config.RoomConfig{})
-		grant := &auth.ClaimGrants{
-			Video: &auth.VideoGrant{
-				RoomCreate: true,
-			},
-		}
-		ctx := service.WithGrants(context.Background(), grant)
-		svc.store.LoadRoomReturns(nil, nil, service.ErrRoomNotFound)
-		_, err := svc.DeleteRoom(ctx, &livekit.DeleteRoomRequest{
-			Room: "testroom",
-		})
-		require.Error(t, err)
-		if terr, ok := err.(twirp.Error); ok {
-			require.Equal(t, twirp.NotFound, terr.Code())
-		} else {
-			require.Fail(t, "should be twirp error")
-		}
-	})
-
 	t.Run("missing permissions", func(t *testing.T) {
 		svc := newTestRoomService(config.RoomConfig{})
 		grant := &auth.ClaimGrants{
 			Video: &auth.VideoGrant{},
 		}
-		ctx := service.WithGrants(context.Background(), grant)
+		ctx := service.WithGrants(context.Background(), grant, "")
 		_, err := svc.DeleteRoom(ctx, &livekit.DeleteRoomRequest{
 			Room: "testroom",
 		})
@@ -72,7 +52,7 @@ func TestMetaDataLimits(t *testing.T) {
 		grant := &auth.ClaimGrants{
 			Video: &auth.VideoGrant{},
 		}
-		ctx := service.WithGrants(context.Background(), grant)
+		ctx := service.WithGrants(context.Background(), grant, "")
 		_, err := svc.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{
 			Room:     "testroom",
 			Identity: "123",
@@ -102,7 +82,7 @@ func TestMetaDataLimits(t *testing.T) {
 			grant := &auth.ClaimGrants{
 				Video: &auth.VideoGrant{},
 			}
-			ctx := service.WithGrants(context.Background(), grant)
+			ctx := service.WithGrants(context.Background(), grant, "")
 			_, err := svc.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{
 				Room:     "testroom",
 				Identity: "123",
@@ -131,13 +111,15 @@ func newTestRoomService(conf config.RoomConfig) *TestRoomService {
 	svc, err := service.NewRoomService(
 		conf,
 		config.APIConfig{ExecutionTimeout: 2},
-		config.PSRPCConfig{},
+		rpc.PSRPCConfig{},
 		router,
 		allocator,
 		store,
 		nil,
-		routing.NewTopicFormatter(),
+		nil,
+		rpc.NewTopicFormatter(),
 		&rpcfakes.FakeTypedRoomClient{},
+		&rpcfakes.FakeTypedParticipantClient{},
 	)
 	if err != nil {
 		panic(err)

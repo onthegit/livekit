@@ -60,8 +60,10 @@ func (r *StandardRoomAllocator) CreateRoom(ctx context.Context, req *livekit.Cre
 	}()
 
 	// find existing room and update it
+	var created bool
 	rm, internal, err := r.roomStore.LoadRoom(ctx, livekit.RoomName(req.Name), true)
 	if err == ErrRoomNotFound {
+		created = true
 		rm = &livekit.Room{
 			Sid:          utils.NewGuid(utils.RoomPrefix),
 			Name:         req.Name,
@@ -76,6 +78,9 @@ func (r *StandardRoomAllocator) CreateRoom(ctx context.Context, req *livekit.Cre
 
 	if req.EmptyTimeout > 0 {
 		rm.EmptyTimeout = req.EmptyTimeout
+	}
+	if req.DepartureTimeout > 0 {
+		rm.DepartureTimeout = req.DepartureTimeout
 	}
 	if req.MaxParticipants > 0 {
 		rm.MaxParticipants = req.MaxParticipants
@@ -114,7 +119,7 @@ func (r *StandardRoomAllocator) CreateRoom(ctx context.Context, req *livekit.Cre
 			return nil, false, routing.ErrNodeLimitReached
 		}
 
-		return rm, false, nil
+		return rm, created, nil
 	}
 
 	// select a new node
@@ -155,6 +160,7 @@ func (r *StandardRoomAllocator) ValidateCreateRoom(ctx context.Context, roomName
 
 func applyDefaultRoomConfig(room *livekit.Room, internal *livekit.RoomInternal, conf *config.RoomConfig) {
 	room.EmptyTimeout = conf.EmptyTimeout
+	room.DepartureTimeout = conf.DepartureTimeout
 	room.MaxParticipants = conf.MaxParticipants
 	for _, codec := range conf.EnabledCodecs {
 		room.EnabledCodecs = append(room.EnabledCodecs, &livekit.Codec{

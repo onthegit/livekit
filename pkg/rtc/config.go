@@ -20,12 +20,13 @@ import (
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
-	dd "github.com/livekit/livekit-server/pkg/sfu/dependencydescriptor"
+	dd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/dependencydescriptor"
 	"github.com/livekit/mediatransportutil/pkg/rtcconfig"
 )
 
 const (
-	frameMarking = "urn:ietf:params:rtp-hdrext:framemarking"
+	frameMarking        = "urn:ietf:params:rtp-hdrext:framemarking"
+	repairedRTPStreamID = "urn:ietf:params:rtp-hdrext:sdes:repaired-rtp-stream-id"
 )
 
 type WebRTCConfig struct {
@@ -38,7 +39,8 @@ type WebRTCConfig struct {
 }
 
 type ReceiverConfig struct {
-	PacketBufferSize int
+	PacketBufferSizeVideo int
+	PacketBufferSizeAudio int
 }
 
 type RTPHeaderExtensionConfig struct {
@@ -71,6 +73,12 @@ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
 	if rtcConf.PacketBufferSize == 0 {
 		rtcConf.PacketBufferSize = 500
 	}
+	if rtcConf.PacketBufferSizeVideo == 0 {
+		rtcConf.PacketBufferSizeVideo = rtcConf.PacketBufferSize
+	}
+	if rtcConf.PacketBufferSizeAudio == 0 {
+		rtcConf.PacketBufferSizeAudio = rtcConf.PacketBufferSize
+	}
 
 	// publisher configuration
 	publisherConfig := DirectionConfig{
@@ -80,6 +88,7 @@ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
 				sdp.SDESMidURI,
 				sdp.SDESRTPStreamIDURI,
 				sdp.AudioLevelURI,
+				//act.AbsCaptureTimeURI,
 			},
 			Video: []string{
 				sdp.SDESMidURI,
@@ -87,6 +96,8 @@ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
 				sdp.TransportCCURI,
 				frameMarking,
 				dd.ExtensionURI,
+				repairedRTPStreamID,
+				//act.AbsCaptureTimeURI,
 			},
 		},
 		RTCPFeedback: RTCPFeedbackConfig{
@@ -106,7 +117,13 @@ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
 	subscriberConfig := DirectionConfig{
 		StrictACKs: conf.RTC.StrictACKs,
 		RTPHeaderExtension: RTPHeaderExtensionConfig{
-			Video: []string{dd.ExtensionURI},
+			Video: []string{
+				dd.ExtensionURI,
+				//act.AbsCaptureTimeURI,
+			},
+			Audio: []string{
+				//act.AbsCaptureTimeURI,
+			},
 		},
 		RTCPFeedback: RTCPFeedbackConfig{
 			Video: []webrtc.RTCPFeedback{
@@ -127,7 +144,8 @@ func NewWebRTCConfig(conf *config.Config) (*WebRTCConfig, error) {
 	return &WebRTCConfig{
 		WebRTCConfig: *webRTCConfig,
 		Receiver: ReceiverConfig{
-			PacketBufferSize: rtcConf.PacketBufferSize,
+			PacketBufferSizeVideo: rtcConf.PacketBufferSizeVideo,
+			PacketBufferSizeAudio: rtcConf.PacketBufferSizeAudio,
 		},
 		Publisher:  publisherConfig,
 		Subscriber: subscriberConfig,
