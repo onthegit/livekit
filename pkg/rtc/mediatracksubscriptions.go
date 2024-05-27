@@ -16,6 +16,7 @@ package rtc
 
 import (
 	"errors"
+	"strings"
 	"sync"
 
 	"github.com/pion/rtcp"
@@ -129,6 +130,7 @@ func (t *MediaTrackSubscriptions) AddSubscriber(sub types.LocalParticipant, wr *
 
 	downTrack, err := sfu.NewDownTrack(sfu.DowntrackParams{
 		Codecs:            codecs,
+		Source:            t.params.MediaTrack.Source(),
 		Receiver:          wr,
 		BufferFactory:     sub.GetBufferFactory(),
 		SubID:             subscriberID,
@@ -257,7 +259,7 @@ func (t *MediaTrackSubscriptions) AddSubscriber(sub types.LocalParticipant, wr *
 			Stereo: info.Stereo,
 			Red:    !info.DisableRed,
 		}
-		if addTrackParams.Red && (len(codecs) == 1 && codecs[0].MimeType == webrtc.MimeTypeOpus) {
+		if addTrackParams.Red && (len(codecs) == 1 && strings.EqualFold(codecs[0].MimeType, webrtc.MimeTypeOpus)) {
 			addTrackParams.Red = false
 		}
 
@@ -353,7 +355,7 @@ func (t *MediaTrackSubscriptions) GetAllSubscribersForMime(mime string) []liveki
 
 	subs := make([]livekit.ParticipantID, 0, len(t.subscribedTracks))
 	for id, subTrack := range t.subscribedTracks {
-		if subTrack.DownTrack().Codec().MimeType != mime {
+		if !strings.EqualFold(subTrack.DownTrack().Codec().MimeType, mime) {
 			continue
 		}
 

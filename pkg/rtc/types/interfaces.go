@@ -97,6 +97,7 @@ const (
 	ParticipantCloseReasonSimulateMigration
 	ParticipantCloseReasonSimulateNodeFailure
 	ParticipantCloseReasonSimulateServerLeave
+	ParticipantCloseReasonSimulateLeaveRequest
 	ParticipantCloseReasonNegotiateFailed
 	ParticipantCloseReasonMigrationRequested
 	ParticipantCloseReasonPublicationError
@@ -140,6 +141,8 @@ func (p ParticipantCloseReason) String() string {
 		return "SIMULATE_NODE_FAILURE"
 	case ParticipantCloseReasonSimulateServerLeave:
 		return "SIMULATE_SERVER_LEAVE"
+	case ParticipantCloseReasonSimulateLeaveRequest:
+		return "SIMULATE_LEAVE_REQUEST"
 	case ParticipantCloseReasonNegotiateFailed:
 		return "NEGOTIATE_FAILED"
 	case ParticipantCloseReasonMigrationRequested:
@@ -161,7 +164,7 @@ func (p ParticipantCloseReason) String() string {
 
 func (p ParticipantCloseReason) ToDisconnectReason() livekit.DisconnectReason {
 	switch p {
-	case ParticipantCloseReasonClientRequestLeave:
+	case ParticipantCloseReasonClientRequestLeave, ParticipantCloseReasonSimulateLeaveRequest:
 		return livekit.DisconnectReason_CLIENT_INITIATED
 	case ParticipantCloseReasonRoomManagerStop:
 		return livekit.DisconnectReason_SERVER_SHUTDOWN
@@ -279,7 +282,8 @@ type Participant interface {
 		timedVersion utils.TimedVersion,
 		resolverBySid func(participantID livekit.ParticipantID) LocalParticipant,
 	) error
-	UpdateVideoLayers(updateVideoLayers *livekit.UpdateVideoLayers) error
+	UpdateAudioTrack(update *livekit.UpdateLocalAudioTrack) error
+	UpdateVideoTrack(update *livekit.UpdateLocalVideoTrack) error
 
 	DebugInfo() map[string]interface{}
 }
@@ -308,6 +312,7 @@ type LocalParticipant interface {
 	IsClosed() bool
 	IsReady() bool
 	IsDisconnected() bool
+	Disconnected() <-chan struct{}
 	IsIdle() bool
 	SubscriberAsPrimary() bool
 	GetClientInfo() *livekit.ClientInfo
@@ -389,7 +394,6 @@ type LocalParticipant interface {
 	OnSubscribeStatusChanged(fn func(publisherID livekit.ParticipantID, subscribed bool))
 	OnClose(callback func(LocalParticipant))
 	OnClaimsChanged(callback func(LocalParticipant))
-	OnTrafficLoad(callback func(trafficLoad *TrafficLoad))
 
 	HandleReceiverReport(dt *sfu.DownTrack, report *rtcp.ReceiverReport)
 
@@ -418,8 +422,6 @@ type LocalParticipant interface {
 	SetSubscriberChannelCapacity(channelCapacity int64)
 
 	GetPacer() pacer.Pacer
-
-	GetTrafficLoad() *TrafficLoad
 }
 
 // Room is a container of participants, and can provide room-level actions
@@ -433,7 +435,6 @@ type Room interface {
 	UpdateSubscriptionPermission(participant LocalParticipant, permissions *livekit.SubscriptionPermission) error
 	SyncState(participant LocalParticipant, state *livekit.SyncState) error
 	SimulateScenario(participant LocalParticipant, scenario *livekit.SimulateScenario) error
-	UpdateVideoLayers(participant Participant, updateVideoLayers *livekit.UpdateVideoLayers) error
 	ResolveMediaTrackForSubscriber(subIdentity livekit.ParticipantIdentity, trackID livekit.TrackID) MediaResolverResult
 	GetLocalParticipants() []LocalParticipant
 	UpdateParticipantMetadata(participant LocalParticipant, name string, metadata string)
@@ -450,6 +451,8 @@ type MediaTrack interface {
 	Stream() string
 
 	UpdateTrackInfo(ti *livekit.TrackInfo)
+	UpdateAudioTrack(update *livekit.UpdateLocalAudioTrack)
+	UpdateVideoTrack(update *livekit.UpdateLocalVideoTrack)
 	ToProto() *livekit.TrackInfo
 
 	PublisherID() livekit.ParticipantID
@@ -459,7 +462,6 @@ type MediaTrack interface {
 	IsMuted() bool
 	SetMuted(muted bool)
 
-	UpdateVideoLayers(layers []*livekit.VideoLayer)
 	IsSimulcast() bool
 
 	GetAudioLevel() (level float64, active bool)

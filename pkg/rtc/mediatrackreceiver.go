@@ -469,7 +469,7 @@ func (t *MediaTrackReceiver) AddSubscriber(sub types.LocalParticipant) (types.Su
 		codec := receiver.Codec()
 		var found bool
 		for _, pc := range potentialCodecs {
-			if codec.MimeType == pc.MimeType {
+			if strings.EqualFold(codec.MimeType, pc.MimeType) {
 				found = true
 				break
 			}
@@ -649,7 +649,7 @@ func (t *MediaTrackReceiver) UpdateTrackInfo(ti *livekit.TrackInfo) {
 			break
 		}
 
-		// for client don't use simulcast codecs (old client version or single codec)
+		// for clients that don't use simulcast codecs (old client version or single codec)
 		if i == 0 {
 			clonedInfo.Layers = ci.Layers
 		}
@@ -667,33 +667,57 @@ func (t *MediaTrackReceiver) UpdateTrackInfo(ti *livekit.TrackInfo) {
 	t.updateTrackInfoOfReceivers()
 }
 
-func (t *MediaTrackReceiver) UpdateVideoLayers(layers []*livekit.VideoLayer) {
-	t.lock.Lock()
-	// set video layer ssrc info
-	for i, ci := range t.trackInfo.Codecs {
-		originLayers := ci.Layers
-		ci.Layers = []*livekit.VideoLayer{}
-		for layerIdx, layer := range layers {
-			ci.Layers = append(ci.Layers, proto.Clone(layer).(*livekit.VideoLayer))
-			for _, l := range originLayers {
-				if l.Quality == ci.Layers[layerIdx].Quality {
-					if l.Ssrc != 0 {
-						ci.Layers[layerIdx].Ssrc = l.Ssrc
-					}
-					break
-				}
-			}
-		}
+func (t *MediaTrackReceiver) UpdateAudioTrack(update *livekit.UpdateLocalAudioTrack) {
+	if t.Kind() != livekit.TrackType_AUDIO {
+		return
+	}
 
-		// for client don't use simulcast codecs (old client version or single codec)
-		if i == 0 {
-			t.trackInfo.Layers = ci.Layers
+	t.lock.Lock()
+	clonedInfo := proto.Clone(t.trackInfo).(*livekit.TrackInfo)
+	clonedInfo.AudioFeatures = update.Features
+	clonedInfo.Stereo = false
+	clonedInfo.DisableDtx = false
+	for _, feature := range update.Features {
+		switch feature {
+		case livekit.AudioTrackFeature_TF_STEREO:
+			clonedInfo.Stereo = true
+		case livekit.AudioTrackFeature_TF_NO_DTX:
+			clonedInfo.DisableDtx = true
 		}
 	}
+	if proto.Equal(t.trackInfo, clonedInfo) {
+		t.lock.Unlock()
+		return
+	}
+
+	t.trackInfo = clonedInfo
 	t.lock.Unlock()
 
 	t.updateTrackInfoOfReceivers()
-	t.MediaTrackSubscriptions.UpdateVideoLayers()
+
+	t.params.Telemetry.TrackPublishedUpdate(context.Background(), t.PublisherID(), clonedInfo)
+}
+
+func (t *MediaTrackReceiver) UpdateVideoTrack(update *livekit.UpdateLocalVideoTrack) {
+	if t.Kind() != livekit.TrackType_VIDEO {
+		return
+	}
+
+	t.lock.Lock()
+	clonedInfo := proto.Clone(t.trackInfo).(*livekit.TrackInfo)
+	clonedInfo.Width = update.Width
+	clonedInfo.Height = update.Height
+	if proto.Equal(t.trackInfo, clonedInfo) {
+		t.lock.Unlock()
+		return
+	}
+
+	t.trackInfo = clonedInfo
+	t.lock.Unlock()
+
+	t.updateTrackInfoOfReceivers()
+
+	t.params.Telemetry.TrackPublishedUpdate(context.Background(), t.PublisherID(), clonedInfo)
 }
 
 func (t *MediaTrackReceiver) TrackInfo() *livekit.TrackInfo {
@@ -703,11 +727,15 @@ func (t *MediaTrackReceiver) TrackInfo() *livekit.TrackInfo {
 	return t.trackInfo
 }
 
+func (t *MediaTrackReceiver) trackInfoCloneLocked() *livekit.TrackInfo {
+	return proto.Clone(t.trackInfo).(*livekit.TrackInfo)
+}
+
 func (t *MediaTrackReceiver) TrackInfoClone() *livekit.TrackInfo {
 	t.lock.RLock()
 	defer t.lock.RUnlock()
 
-	return proto.Clone(t.trackInfo).(*livekit.TrackInfo)
+	return t.trackInfoCloneLocked()
 }
 
 func (t *MediaTrackReceiver) NotifyMaxLayerChange(maxLayer int32) {

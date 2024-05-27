@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -201,6 +202,7 @@ type ReceiverReportListener func(dt *DownTrack, report *rtcp.ReceiverReport)
 
 type DowntrackParams struct {
 	Codecs            []webrtc.RTPCodecParameters
+	Source            livekit.TrackSource
 	Receiver          TrackReceiver
 	BufferFactory     *buffer.Factory
 	SubID             livekit.ParticipantID
@@ -625,21 +627,23 @@ func (d *DownTrack) keyFrameRequester() {
 		return time.Duration(interval) * time.Millisecond
 	}
 
-	interval := getInterval()
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	timer := time.NewTimer(math.MaxInt64)
+	timer.Stop()
 
-	for {
-		if d.IsClosed() {
-			return
-		}
+	defer timer.Stop()
+
+	for !d.IsClosed() {
+		timer.Reset(getInterval())
 
 		select {
 		case _, more := <-d.keyFrameRequesterCh:
 			if !more {
 				return
 			}
-		case <-ticker.C:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
 		}
 
 		locked, layer := d.forwarder.CheckSync()
@@ -648,8 +652,6 @@ func (d *DownTrack) keyFrameRequester() {
 			d.params.Receiver.SendPLI(layer, false)
 			d.rtpStats.UpdateLayerLockPliAndTime(1)
 		}
-
-		ticker.Reset(getInterval())
 	}
 }
 
@@ -712,18 +714,14 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) error {
 
 	poolEntity := PacketFactory.Get().(*[]byte)
 	payload := *poolEntity
-	shouldForward, incomingHeaderSize, outgoingHeaderSize, err := d.forwarder.TranslateCodecHeader(extPkt, &tp.rtp, payload)
-	if !shouldForward {
-		PacketFactory.Put(poolEntity)
-		return err
-	}
-	n := copy(payload[outgoingHeaderSize:], extPkt.Packet.Payload[incomingHeaderSize:])
-	if n != len(extPkt.Packet.Payload[incomingHeaderSize:]) {
-		d.params.Logger.Errorw("payload overflow", nil, "want", len(extPkt.Packet.Payload[incomingHeaderSize:]), "have", n)
+	copy(payload, tp.codecBytes)
+	n := copy(payload[len(tp.codecBytes):], extPkt.Packet.Payload[tp.incomingHeaderSize:])
+	if n != len(extPkt.Packet.Payload[tp.incomingHeaderSize:]) {
+		d.params.Logger.Errorw("payload overflow", nil, "want", len(extPkt.Packet.Payload[tp.incomingHeaderSize:]), "have", n)
 		PacketFactory.Put(poolEntity)
 		return ErrPayloadOverflow
 	}
-	payload = payload[:outgoingHeaderSize+n]
+	payload = payload[:len(tp.codecBytes)+n]
 
 	hdr, err := d.getTranslatedRTPHeader(extPkt, &tp)
 	if err != nil {
@@ -795,8 +793,8 @@ func (d *DownTrack) WriteRTP(extPkt *buffer.ExtPacket, layer int32) error {
 			tp.rtp.extTimestamp,
 			hdr.Marker,
 			int8(layer),
-			payload[:outgoingHeaderSize],
-			incomingHeaderSize,
+			payload[:len(tp.codecBytes)],
+			tp.incomingHeaderSize,
 			tp.ddBytes,
 			actBytes,
 		)
@@ -1504,15 +1502,16 @@ func (d *DownTrack) getVP8BlankFrame(frameEndNeeded bool) ([]byte, error) {
 	// Used even when closing out a previous frame. Looks like receivers
 	// do not care about content (it will probably end up being an undecodable
 	// frame, but that should be okay as there are key frames following)
-	payload := make([]byte, 1000)
-	n, err := d.forwarder.GetPadding(frameEndNeeded, payload)
+	header, err := d.forwarder.GetPadding(frameEndNeeded)
 	if err != nil {
 		return nil, err
 	}
 
-	copy(payload[n:], VP8KeyFrame8x8)
-	trailerLen := d.maybeAddTrailer(payload[n+len(VP8KeyFrame8x8):])
-	return payload[:n+len(VP8KeyFrame8x8)+trailerLen], nil
+	payload := make([]byte, 1000)
+	copy(payload, header)
+	copy(payload[len(header):], VP8KeyFrame8x8)
+	trailerLen := d.maybeAddTrailer(payload[len(header)+len(VP8KeyFrame8x8):])
+	return payload[:len(header)+len(VP8KeyFrame8x8)+trailerLen], nil
 }
 
 func (d *DownTrack) getH264BlankFrame(_frameEndNeeded bool) ([]byte, error) {
@@ -1602,9 +1601,12 @@ func (d *DownTrack) handleRTCP(bytes []byte) {
 				*/
 
 				if d.playoutDelay != nil {
-					jitterMs := uint64(r.Jitter*1e3) / uint64(d.codec.ClockRate)
 					d.playoutDelay.OnSeqAcked(uint16(r.LastSequenceNumber))
-					d.playoutDelay.SetJitter(uint32(jitterMs))
+					// screen share track has inaccuracy jitter due to its low frame rate and bursty traffic
+					if d.params.Source != livekit.TrackSource_SCREEN_SHARE {
+						jitterMs := uint64(r.Jitter*1e3) / uint64(d.codec.ClockRate)
+						d.playoutDelay.SetJitter(uint32(jitterMs))
+					}
 				}
 			}
 			if len(rr.Reports) > 0 {

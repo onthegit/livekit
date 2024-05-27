@@ -168,6 +168,16 @@ type FakeLocalParticipant struct {
 	debugInfoReturnsOnCall map[int]struct {
 		result1 map[string]interface{}
 	}
+	DisconnectedStub        func() <-chan struct{}
+	disconnectedMutex       sync.RWMutex
+	disconnectedArgsForCall []struct {
+	}
+	disconnectedReturns struct {
+		result1 <-chan struct{}
+	}
+	disconnectedReturnsOnCall map[int]struct {
+		result1 <-chan struct{}
+	}
 	GetAdaptiveStreamStub        func() bool
 	getAdaptiveStreamMutex       sync.RWMutex
 	getAdaptiveStreamArgsForCall []struct {
@@ -334,16 +344,6 @@ type FakeLocalParticipant struct {
 	}
 	getSubscribedTracksReturnsOnCall map[int]struct {
 		result1 []types.SubscribedTrack
-	}
-	GetTrafficLoadStub        func() *types.TrafficLoad
-	getTrafficLoadMutex       sync.RWMutex
-	getTrafficLoadArgsForCall []struct {
-	}
-	getTrafficLoadReturns struct {
-		result1 *types.TrafficLoad
-	}
-	getTrafficLoadReturnsOnCall map[int]struct {
-		result1 *types.TrafficLoad
 	}
 	GetTrailerStub        func() []byte
 	getTrailerMutex       sync.RWMutex
@@ -626,11 +626,6 @@ type FakeLocalParticipant struct {
 	onTrackUpdatedArgsForCall []struct {
 		arg1 func(types.LocalParticipant, types.MediaTrack)
 	}
-	OnTrafficLoadStub        func(func(trafficLoad *types.TrafficLoad))
-	onTrafficLoadMutex       sync.RWMutex
-	onTrafficLoadArgsForCall []struct {
-		arg1 func(trafficLoad *types.TrafficLoad)
-	}
 	ProtocolVersionStub        func() types.ProtocolVersion
 	protocolVersionMutex       sync.RWMutex
 	protocolVersionArgsForCall []struct {
@@ -906,6 +901,17 @@ type FakeLocalParticipant struct {
 	unsubscribeFromTrackArgsForCall []struct {
 		arg1 livekit.TrackID
 	}
+	UpdateAudioTrackStub        func(*livekit.UpdateLocalAudioTrack) error
+	updateAudioTrackMutex       sync.RWMutex
+	updateAudioTrackArgsForCall []struct {
+		arg1 *livekit.UpdateLocalAudioTrack
+	}
+	updateAudioTrackReturns struct {
+		result1 error
+	}
+	updateAudioTrackReturnsOnCall map[int]struct {
+		result1 error
+	}
 	UpdateLastSeenSignalStub        func()
 	updateLastSeenSignalMutex       sync.RWMutex
 	updateLastSeenSignalArgsForCall []struct {
@@ -965,15 +971,15 @@ type FakeLocalParticipant struct {
 	updateSubscriptionPermissionReturnsOnCall map[int]struct {
 		result1 error
 	}
-	UpdateVideoLayersStub        func(*livekit.UpdateVideoLayers) error
-	updateVideoLayersMutex       sync.RWMutex
-	updateVideoLayersArgsForCall []struct {
-		arg1 *livekit.UpdateVideoLayers
+	UpdateVideoTrackStub        func(*livekit.UpdateLocalVideoTrack) error
+	updateVideoTrackMutex       sync.RWMutex
+	updateVideoTrackArgsForCall []struct {
+		arg1 *livekit.UpdateLocalVideoTrack
 	}
-	updateVideoLayersReturns struct {
+	updateVideoTrackReturns struct {
 		result1 error
 	}
-	updateVideoLayersReturnsOnCall map[int]struct {
+	updateVideoTrackReturnsOnCall map[int]struct {
 		result1 error
 	}
 	VerifySubscribeParticipantInfoStub        func(livekit.ParticipantID, uint32)
@@ -1767,6 +1773,59 @@ func (fake *FakeLocalParticipant) DebugInfoReturnsOnCall(i int, result1 map[stri
 	}
 	fake.debugInfoReturnsOnCall[i] = struct {
 		result1 map[string]interface{}
+	}{result1}
+}
+
+func (fake *FakeLocalParticipant) Disconnected() <-chan struct{} {
+	fake.disconnectedMutex.Lock()
+	ret, specificReturn := fake.disconnectedReturnsOnCall[len(fake.disconnectedArgsForCall)]
+	fake.disconnectedArgsForCall = append(fake.disconnectedArgsForCall, struct {
+	}{})
+	stub := fake.DisconnectedStub
+	fakeReturns := fake.disconnectedReturns
+	fake.recordInvocation("Disconnected", []interface{}{})
+	fake.disconnectedMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeLocalParticipant) DisconnectedCallCount() int {
+	fake.disconnectedMutex.RLock()
+	defer fake.disconnectedMutex.RUnlock()
+	return len(fake.disconnectedArgsForCall)
+}
+
+func (fake *FakeLocalParticipant) DisconnectedCalls(stub func() <-chan struct{}) {
+	fake.disconnectedMutex.Lock()
+	defer fake.disconnectedMutex.Unlock()
+	fake.DisconnectedStub = stub
+}
+
+func (fake *FakeLocalParticipant) DisconnectedReturns(result1 <-chan struct{}) {
+	fake.disconnectedMutex.Lock()
+	defer fake.disconnectedMutex.Unlock()
+	fake.DisconnectedStub = nil
+	fake.disconnectedReturns = struct {
+		result1 <-chan struct{}
+	}{result1}
+}
+
+func (fake *FakeLocalParticipant) DisconnectedReturnsOnCall(i int, result1 <-chan struct{}) {
+	fake.disconnectedMutex.Lock()
+	defer fake.disconnectedMutex.Unlock()
+	fake.DisconnectedStub = nil
+	if fake.disconnectedReturnsOnCall == nil {
+		fake.disconnectedReturnsOnCall = make(map[int]struct {
+			result1 <-chan struct{}
+		})
+	}
+	fake.disconnectedReturnsOnCall[i] = struct {
+		result1 <-chan struct{}
 	}{result1}
 }
 
@@ -2645,59 +2704,6 @@ func (fake *FakeLocalParticipant) GetSubscribedTracksReturnsOnCall(i int, result
 	}
 	fake.getSubscribedTracksReturnsOnCall[i] = struct {
 		result1 []types.SubscribedTrack
-	}{result1}
-}
-
-func (fake *FakeLocalParticipant) GetTrafficLoad() *types.TrafficLoad {
-	fake.getTrafficLoadMutex.Lock()
-	ret, specificReturn := fake.getTrafficLoadReturnsOnCall[len(fake.getTrafficLoadArgsForCall)]
-	fake.getTrafficLoadArgsForCall = append(fake.getTrafficLoadArgsForCall, struct {
-	}{})
-	stub := fake.GetTrafficLoadStub
-	fakeReturns := fake.getTrafficLoadReturns
-	fake.recordInvocation("GetTrafficLoad", []interface{}{})
-	fake.getTrafficLoadMutex.Unlock()
-	if stub != nil {
-		return stub()
-	}
-	if specificReturn {
-		return ret.result1
-	}
-	return fakeReturns.result1
-}
-
-func (fake *FakeLocalParticipant) GetTrafficLoadCallCount() int {
-	fake.getTrafficLoadMutex.RLock()
-	defer fake.getTrafficLoadMutex.RUnlock()
-	return len(fake.getTrafficLoadArgsForCall)
-}
-
-func (fake *FakeLocalParticipant) GetTrafficLoadCalls(stub func() *types.TrafficLoad) {
-	fake.getTrafficLoadMutex.Lock()
-	defer fake.getTrafficLoadMutex.Unlock()
-	fake.GetTrafficLoadStub = stub
-}
-
-func (fake *FakeLocalParticipant) GetTrafficLoadReturns(result1 *types.TrafficLoad) {
-	fake.getTrafficLoadMutex.Lock()
-	defer fake.getTrafficLoadMutex.Unlock()
-	fake.GetTrafficLoadStub = nil
-	fake.getTrafficLoadReturns = struct {
-		result1 *types.TrafficLoad
-	}{result1}
-}
-
-func (fake *FakeLocalParticipant) GetTrafficLoadReturnsOnCall(i int, result1 *types.TrafficLoad) {
-	fake.getTrafficLoadMutex.Lock()
-	defer fake.getTrafficLoadMutex.Unlock()
-	fake.GetTrafficLoadStub = nil
-	if fake.getTrafficLoadReturnsOnCall == nil {
-		fake.getTrafficLoadReturnsOnCall = make(map[int]struct {
-			result1 *types.TrafficLoad
-		})
-	}
-	fake.getTrafficLoadReturnsOnCall[i] = struct {
-		result1 *types.TrafficLoad
 	}{result1}
 }
 
@@ -4283,38 +4289,6 @@ func (fake *FakeLocalParticipant) OnTrackUpdatedArgsForCall(i int) func(types.Lo
 	return argsForCall.arg1
 }
 
-func (fake *FakeLocalParticipant) OnTrafficLoad(arg1 func(trafficLoad *types.TrafficLoad)) {
-	fake.onTrafficLoadMutex.Lock()
-	fake.onTrafficLoadArgsForCall = append(fake.onTrafficLoadArgsForCall, struct {
-		arg1 func(trafficLoad *types.TrafficLoad)
-	}{arg1})
-	stub := fake.OnTrafficLoadStub
-	fake.recordInvocation("OnTrafficLoad", []interface{}{arg1})
-	fake.onTrafficLoadMutex.Unlock()
-	if stub != nil {
-		fake.OnTrafficLoadStub(arg1)
-	}
-}
-
-func (fake *FakeLocalParticipant) OnTrafficLoadCallCount() int {
-	fake.onTrafficLoadMutex.RLock()
-	defer fake.onTrafficLoadMutex.RUnlock()
-	return len(fake.onTrafficLoadArgsForCall)
-}
-
-func (fake *FakeLocalParticipant) OnTrafficLoadCalls(stub func(func(trafficLoad *types.TrafficLoad))) {
-	fake.onTrafficLoadMutex.Lock()
-	defer fake.onTrafficLoadMutex.Unlock()
-	fake.OnTrafficLoadStub = stub
-}
-
-func (fake *FakeLocalParticipant) OnTrafficLoadArgsForCall(i int) func(trafficLoad *types.TrafficLoad) {
-	fake.onTrafficLoadMutex.RLock()
-	defer fake.onTrafficLoadMutex.RUnlock()
-	argsForCall := fake.onTrafficLoadArgsForCall[i]
-	return argsForCall.arg1
-}
-
 func (fake *FakeLocalParticipant) ProtocolVersion() types.ProtocolVersion {
 	fake.protocolVersionMutex.Lock()
 	ret, specificReturn := fake.protocolVersionReturnsOnCall[len(fake.protocolVersionArgsForCall)]
@@ -5839,6 +5813,67 @@ func (fake *FakeLocalParticipant) UnsubscribeFromTrackArgsForCall(i int) livekit
 	return argsForCall.arg1
 }
 
+func (fake *FakeLocalParticipant) UpdateAudioTrack(arg1 *livekit.UpdateLocalAudioTrack) error {
+	fake.updateAudioTrackMutex.Lock()
+	ret, specificReturn := fake.updateAudioTrackReturnsOnCall[len(fake.updateAudioTrackArgsForCall)]
+	fake.updateAudioTrackArgsForCall = append(fake.updateAudioTrackArgsForCall, struct {
+		arg1 *livekit.UpdateLocalAudioTrack
+	}{arg1})
+	stub := fake.UpdateAudioTrackStub
+	fakeReturns := fake.updateAudioTrackReturns
+	fake.recordInvocation("UpdateAudioTrack", []interface{}{arg1})
+	fake.updateAudioTrackMutex.Unlock()
+	if stub != nil {
+		return stub(arg1)
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeLocalParticipant) UpdateAudioTrackCallCount() int {
+	fake.updateAudioTrackMutex.RLock()
+	defer fake.updateAudioTrackMutex.RUnlock()
+	return len(fake.updateAudioTrackArgsForCall)
+}
+
+func (fake *FakeLocalParticipant) UpdateAudioTrackCalls(stub func(*livekit.UpdateLocalAudioTrack) error) {
+	fake.updateAudioTrackMutex.Lock()
+	defer fake.updateAudioTrackMutex.Unlock()
+	fake.UpdateAudioTrackStub = stub
+}
+
+func (fake *FakeLocalParticipant) UpdateAudioTrackArgsForCall(i int) *livekit.UpdateLocalAudioTrack {
+	fake.updateAudioTrackMutex.RLock()
+	defer fake.updateAudioTrackMutex.RUnlock()
+	argsForCall := fake.updateAudioTrackArgsForCall[i]
+	return argsForCall.arg1
+}
+
+func (fake *FakeLocalParticipant) UpdateAudioTrackReturns(result1 error) {
+	fake.updateAudioTrackMutex.Lock()
+	defer fake.updateAudioTrackMutex.Unlock()
+	fake.UpdateAudioTrackStub = nil
+	fake.updateAudioTrackReturns = struct {
+		result1 error
+	}{result1}
+}
+
+func (fake *FakeLocalParticipant) UpdateAudioTrackReturnsOnCall(i int, result1 error) {
+	fake.updateAudioTrackMutex.Lock()
+	defer fake.updateAudioTrackMutex.Unlock()
+	fake.UpdateAudioTrackStub = nil
+	if fake.updateAudioTrackReturnsOnCall == nil {
+		fake.updateAudioTrackReturnsOnCall = make(map[int]struct {
+			result1 error
+		})
+	}
+	fake.updateAudioTrackReturnsOnCall[i] = struct {
+		result1 error
+	}{result1}
+}
+
 func (fake *FakeLocalParticipant) UpdateLastSeenSignal() {
 	fake.updateLastSeenSignalMutex.Lock()
 	fake.updateLastSeenSignalArgsForCall = append(fake.updateLastSeenSignalArgsForCall, struct {
@@ -6154,16 +6189,16 @@ func (fake *FakeLocalParticipant) UpdateSubscriptionPermissionReturnsOnCall(i in
 	}{result1}
 }
 
-func (fake *FakeLocalParticipant) UpdateVideoLayers(arg1 *livekit.UpdateVideoLayers) error {
-	fake.updateVideoLayersMutex.Lock()
-	ret, specificReturn := fake.updateVideoLayersReturnsOnCall[len(fake.updateVideoLayersArgsForCall)]
-	fake.updateVideoLayersArgsForCall = append(fake.updateVideoLayersArgsForCall, struct {
-		arg1 *livekit.UpdateVideoLayers
+func (fake *FakeLocalParticipant) UpdateVideoTrack(arg1 *livekit.UpdateLocalVideoTrack) error {
+	fake.updateVideoTrackMutex.Lock()
+	ret, specificReturn := fake.updateVideoTrackReturnsOnCall[len(fake.updateVideoTrackArgsForCall)]
+	fake.updateVideoTrackArgsForCall = append(fake.updateVideoTrackArgsForCall, struct {
+		arg1 *livekit.UpdateLocalVideoTrack
 	}{arg1})
-	stub := fake.UpdateVideoLayersStub
-	fakeReturns := fake.updateVideoLayersReturns
-	fake.recordInvocation("UpdateVideoLayers", []interface{}{arg1})
-	fake.updateVideoLayersMutex.Unlock()
+	stub := fake.UpdateVideoTrackStub
+	fakeReturns := fake.updateVideoTrackReturns
+	fake.recordInvocation("UpdateVideoTrack", []interface{}{arg1})
+	fake.updateVideoTrackMutex.Unlock()
 	if stub != nil {
 		return stub(arg1)
 	}
@@ -6173,44 +6208,44 @@ func (fake *FakeLocalParticipant) UpdateVideoLayers(arg1 *livekit.UpdateVideoLay
 	return fakeReturns.result1
 }
 
-func (fake *FakeLocalParticipant) UpdateVideoLayersCallCount() int {
-	fake.updateVideoLayersMutex.RLock()
-	defer fake.updateVideoLayersMutex.RUnlock()
-	return len(fake.updateVideoLayersArgsForCall)
+func (fake *FakeLocalParticipant) UpdateVideoTrackCallCount() int {
+	fake.updateVideoTrackMutex.RLock()
+	defer fake.updateVideoTrackMutex.RUnlock()
+	return len(fake.updateVideoTrackArgsForCall)
 }
 
-func (fake *FakeLocalParticipant) UpdateVideoLayersCalls(stub func(*livekit.UpdateVideoLayers) error) {
-	fake.updateVideoLayersMutex.Lock()
-	defer fake.updateVideoLayersMutex.Unlock()
-	fake.UpdateVideoLayersStub = stub
+func (fake *FakeLocalParticipant) UpdateVideoTrackCalls(stub func(*livekit.UpdateLocalVideoTrack) error) {
+	fake.updateVideoTrackMutex.Lock()
+	defer fake.updateVideoTrackMutex.Unlock()
+	fake.UpdateVideoTrackStub = stub
 }
 
-func (fake *FakeLocalParticipant) UpdateVideoLayersArgsForCall(i int) *livekit.UpdateVideoLayers {
-	fake.updateVideoLayersMutex.RLock()
-	defer fake.updateVideoLayersMutex.RUnlock()
-	argsForCall := fake.updateVideoLayersArgsForCall[i]
+func (fake *FakeLocalParticipant) UpdateVideoTrackArgsForCall(i int) *livekit.UpdateLocalVideoTrack {
+	fake.updateVideoTrackMutex.RLock()
+	defer fake.updateVideoTrackMutex.RUnlock()
+	argsForCall := fake.updateVideoTrackArgsForCall[i]
 	return argsForCall.arg1
 }
 
-func (fake *FakeLocalParticipant) UpdateVideoLayersReturns(result1 error) {
-	fake.updateVideoLayersMutex.Lock()
-	defer fake.updateVideoLayersMutex.Unlock()
-	fake.UpdateVideoLayersStub = nil
-	fake.updateVideoLayersReturns = struct {
+func (fake *FakeLocalParticipant) UpdateVideoTrackReturns(result1 error) {
+	fake.updateVideoTrackMutex.Lock()
+	defer fake.updateVideoTrackMutex.Unlock()
+	fake.UpdateVideoTrackStub = nil
+	fake.updateVideoTrackReturns = struct {
 		result1 error
 	}{result1}
 }
 
-func (fake *FakeLocalParticipant) UpdateVideoLayersReturnsOnCall(i int, result1 error) {
-	fake.updateVideoLayersMutex.Lock()
-	defer fake.updateVideoLayersMutex.Unlock()
-	fake.UpdateVideoLayersStub = nil
-	if fake.updateVideoLayersReturnsOnCall == nil {
-		fake.updateVideoLayersReturnsOnCall = make(map[int]struct {
+func (fake *FakeLocalParticipant) UpdateVideoTrackReturnsOnCall(i int, result1 error) {
+	fake.updateVideoTrackMutex.Lock()
+	defer fake.updateVideoTrackMutex.Unlock()
+	fake.UpdateVideoTrackStub = nil
+	if fake.updateVideoTrackReturnsOnCall == nil {
+		fake.updateVideoTrackReturnsOnCall = make(map[int]struct {
 			result1 error
 		})
 	}
-	fake.updateVideoLayersReturnsOnCall[i] = struct {
+	fake.updateVideoTrackReturnsOnCall[i] = struct {
 		result1 error
 	}{result1}
 }
@@ -6408,6 +6443,8 @@ func (fake *FakeLocalParticipant) Invocations() map[string][][]interface{} {
 	defer fake.connectedAtMutex.RUnlock()
 	fake.debugInfoMutex.RLock()
 	defer fake.debugInfoMutex.RUnlock()
+	fake.disconnectedMutex.RLock()
+	defer fake.disconnectedMutex.RUnlock()
 	fake.getAdaptiveStreamMutex.RLock()
 	defer fake.getAdaptiveStreamMutex.RUnlock()
 	fake.getAudioLevelMutex.RLock()
@@ -6440,8 +6477,6 @@ func (fake *FakeLocalParticipant) Invocations() map[string][][]interface{} {
 	defer fake.getSubscribedParticipantsMutex.RUnlock()
 	fake.getSubscribedTracksMutex.RLock()
 	defer fake.getSubscribedTracksMutex.RUnlock()
-	fake.getTrafficLoadMutex.RLock()
-	defer fake.getTrafficLoadMutex.RUnlock()
 	fake.getTrailerMutex.RLock()
 	defer fake.getTrailerMutex.RUnlock()
 	fake.handleAnswerMutex.RLock()
@@ -6516,8 +6551,6 @@ func (fake *FakeLocalParticipant) Invocations() map[string][][]interface{} {
 	defer fake.onTrackUnpublishedMutex.RUnlock()
 	fake.onTrackUpdatedMutex.RLock()
 	defer fake.onTrackUpdatedMutex.RUnlock()
-	fake.onTrafficLoadMutex.RLock()
-	defer fake.onTrafficLoadMutex.RUnlock()
 	fake.protocolVersionMutex.RLock()
 	defer fake.protocolVersionMutex.RUnlock()
 	fake.removePublishedTrackMutex.RLock()
@@ -6582,6 +6615,8 @@ func (fake *FakeLocalParticipant) Invocations() map[string][][]interface{} {
 	defer fake.uncacheDownTrackMutex.RUnlock()
 	fake.unsubscribeFromTrackMutex.RLock()
 	defer fake.unsubscribeFromTrackMutex.RUnlock()
+	fake.updateAudioTrackMutex.RLock()
+	defer fake.updateAudioTrackMutex.RUnlock()
 	fake.updateLastSeenSignalMutex.RLock()
 	defer fake.updateLastSeenSignalMutex.RUnlock()
 	fake.updateMediaLossMutex.RLock()
@@ -6596,8 +6631,8 @@ func (fake *FakeLocalParticipant) Invocations() map[string][][]interface{} {
 	defer fake.updateSubscribedTrackSettingsMutex.RUnlock()
 	fake.updateSubscriptionPermissionMutex.RLock()
 	defer fake.updateSubscriptionPermissionMutex.RUnlock()
-	fake.updateVideoLayersMutex.RLock()
-	defer fake.updateVideoLayersMutex.RUnlock()
+	fake.updateVideoTrackMutex.RLock()
+	defer fake.updateVideoTrackMutex.RUnlock()
 	fake.verifySubscribeParticipantInfoMutex.RLock()
 	defer fake.verifySubscribeParticipantInfoMutex.RUnlock()
 	fake.waitUntilSubscribedMutex.RLock()
