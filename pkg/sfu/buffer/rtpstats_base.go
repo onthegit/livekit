@@ -37,6 +37,8 @@ const (
 	cFirstPacketTimeAdjustThreshold = 15 * time.Second
 
 	cPassthroughNTPTimestamp = true
+
+	cSequenceNumberLargeJumpThreshold = 1000
 )
 
 // -------------------------------------------------------
@@ -172,8 +174,9 @@ type rtpStatsBase struct {
 	startTime time.Time
 	endTime   time.Time
 
-	firstTime   time.Time
-	highestTime time.Time
+	firstTime           time.Time
+	firstTimeAdjustment time.Duration
+	highestTime         time.Time
 
 	lastTransit            uint64
 	lastJitterExtTimestamp uint64
@@ -549,6 +552,7 @@ func (r *rtpStatsBase) maybeAdjustFirstPacketTime(srData *RTCPSenderReportData, 
 			r.logger.Infow("adjusting first packet time, too big, ignoring", getFields()...)
 		} else {
 			r.logger.Debugw("adjusting first packet time", getFields()...)
+			r.firstTimeAdjustment += r.firstTime.Sub(firstTime)
 			r.firstTime = firstTime
 		}
 	}
@@ -641,7 +645,9 @@ func (r *rtpStatsBase) MarshalLogObject(e zapcore.ObjectEncoder) error {
 	}
 
 	e.AddTime("startTime", r.startTime)
+	e.AddTime("endTime", r.endTime)
 	e.AddTime("firstTime", r.firstTime)
+	e.AddDuration("firstTimeAdjustment", r.firstTimeAdjustment)
 	e.AddTime("highestTime", r.highestTime)
 
 	e.AddUint64("bytes", r.bytes)
